@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coinfox"
+version = "0.1.0"
+description = "A fox that watches BTC and estimates the odds. Experimental."
+requires-python = ">=3.9"
+dependencies = [
+    "requests>=2.31",
+    "rich>=13.7",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

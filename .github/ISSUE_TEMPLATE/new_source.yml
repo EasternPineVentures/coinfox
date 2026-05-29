@@ -1,0 +1,46 @@
+name: 🔌 New data source
+description: Suggest a new free BTC data source for coinfox to pull
+labels: [source-request, good first issue]
+body:
+  - type: input
+    id: name
+    attributes:
+      label: Source name
+      placeholder: e.g. "DeFiLlama stablecoin supply"
+    validations:
+      required: true
+  - type: input
+    id: url
+    attributes:
+      label: Endpoint URL or docs link
+      placeholder: https://api.example.com/...
+    validations:
+      required: true
+  - type: dropdown
+    id: auth
+    attributes:
+      label: Authentication required?
+      options:
+        - "No (preferred)"
+        - "Free API key"
+        - "Paid"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What does this tell us about BTC?
+    validations:
+      required: true
+  - type: textarea
+    id: example
+    attributes:
+      label: Example response (optional)
+      render: json
+  - type: checkboxes
+    id: tos
+    attributes:
+      label: Terms of service
+      options:
+        - label: I've checked that the source's ToS / rate limits allow this use.
+          required: true
