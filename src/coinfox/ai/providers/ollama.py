@@ -41,7 +41,8 @@ class OllamaProvider:
                     "model": self.model,
                     "stream": False,
                     "options": {
-                        "num_predict": call.max_tokens,
+                        # Give generous budget; thinking models use tokens internally
+                        "num_predict": max(call.max_tokens, 800),
                         "temperature": call.temperature,
                     },
                     "messages": [
@@ -49,11 +50,16 @@ class OllamaProvider:
                         {"role": "user", "content": call.prompt},
                     ],
                 },
-                timeout=120,
+                timeout=180,
             )
             r.raise_for_status()
             data = r.json()
-            text = (data.get("message") or {}).get("content", "").strip()
+            msg = data.get("message") or {}
+            # qwen3 and other thinking models split content from thinking tokens
+            text = (msg.get("content") or "").strip()
+            if not text:
+                # fallback: try the thinking field (some models put output there)
+                text = (msg.get("thinking") or "").strip()
         except requests.RequestException as e:
             raise ProviderError(f"ollama: {e}") from e
         return AIResult(
