@@ -206,9 +206,58 @@ def _section(panel_or_table, module_name: str):
     return Group(panel_or_table, Text(f"  source: {line}", style="dim italic"))
 
 
+def _render_foxclaw_thought() -> Optional[object]:
+    """Return a Rich Panel for the latest FoxClaw thought, or None if unavailable."""
+    try:
+        import time as _time
+        import sqlite3
+        from pathlib import Path
+        db = Path.home() / ".coinfox" / "churn.sqlite"
+        if not db.exists():
+            return None
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT ts, bias, conviction, headline, body, provider, model "
+                "FROM thoughts ORDER BY ts DESC LIMIT 1"
+            ).fetchone()
+        if not row:
+            return None
+        ts, bias, conviction, headline, body, provider, model_name = row
+        age_s = int(_time.time()) - int(ts)
+        if age_s < 60:
+            age_str = f"{age_s}s ago"
+        elif age_s < 3600:
+            age_str = f"{age_s // 60}m ago"
+        else:
+            age_str = f"{age_s // 3600}h ago"
+        color = _bias_color(bias)
+        g = Table.grid(padding=(0, 2))
+        g.add_column(style="dim"); g.add_column()
+        g.add_row("bias", Text(bias.upper(), style=color))
+        g.add_row("conviction", f"{conviction}/5")
+        g.add_row("headline", Text(headline, style="bold"))
+        g.add_row("provider", f"{provider} ({model_name})")
+        g.add_row("age", age_str)
+        freshness = "[green]fresh[/]" if age_s < 1800 else "[yellow]stale (>30m)[/]"
+        return Panel(
+            Group(g, Text(""), Text(body, style="dim"),
+                  Text(f"\n{freshness} · not advice · experimental", style="dim italic")),
+            title="🦊 FoxClaw — autonomous AI read",
+            border_style=color,
+        )
+    except Exception:
+        return None
+
+
+
 def render_intel(intel: Intel) -> Panel:
     """Render the full firehose of BTC info from all sources."""
     sections = []
+
+    # --- FoxClaw autonomous AI read (shown first if available)
+    fc_panel = _render_foxclaw_thought()
+    if fc_panel is not None:
+        sections.append(fc_panel)
 
     # --- Prices across exchanges
     if intel.prices and intel.prices.quotes:
