@@ -1,178 +1,202 @@
-# coinfox 🦊
+# CoinFox
 
-> **A bastion of free BTC info.** No keys. No paywalls. No tracking.
-> A fox in your terminal that watches Bitcoin from everywhere on the open web,
-> thinks out loud, and tells you the odds.
+> **CoinFox is a free, keyless market intelligence terminal by Eastern Pine
+> Intelligence, an open-source lab from Eastern Pine Ventures.**
 
-```
-        /\___/\
-       (  o o  )    < watching BTC...
-       (  =^=  )
-        (______)
-```
+CoinFox gathers free public market data, produces transparent `LONG`, `SHORT`,
+or `NEUTRAL` bias readouts, explains the reasoning in plain English, and shows
+what would weaken the current thesis. It is educational, open-source, and built
+for community contribution.
 
 [![CI](https://github.com/EasternPineVentures/coinfox/actions/workflows/ci.yml/badge.svg)](https://github.com/EasternPineVentures/coinfox/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
----
+## What CoinFox Is
 
-## Why
+CoinFox is a transparent market readout tool. It does not place trades, control
+accounts, or tell users what they must do. It provides directional bias,
+confidence, top drivers, source health, and the area where the thesis starts to
+weaken.
 
-Most BTC tooling is either locked behind paid APIs or trying to sell you
-something. **coinfox is the opposite**: a community-owned, MIT-licensed
-terminal tool that pulls free BTC information from everywhere on the web
-and surfaces it in one place — with a transparent probability model and
-an actionable trade idea you can second-guess.
+The public contract is intentionally simple:
 
-You should grow with us. Add a source. Tune a weight. Open a PR.
+- `LONG`: the current evidence leans upward.
+- `SHORT`: the current evidence leans downward.
+- `NEUTRAL`: the current evidence is mixed or not strong enough.
 
-## What it does
+## Why It Exists
 
-### `coinfox watch` — the signal verdict
-EMA stack, RSI, MACD, Bollinger %B, volume z-score, Fear & Greed, optional
-derivatives funding & basis → a single **P(up)** with a **confidence** score.
+Most market tooling either hides behind paid APIs, buries the reasoning, or
+pretends uncertainty does not exist. CoinFox takes the opposite path:
 
-### `coinfox call` — the actionable call
-Turns the verdict into entry / stop / target / R:R and a **suggested
-position size** (capped quarter-Kelly, gated by confidence). Built to help
-you *think clearly* — not to YOLO.
+- free and keyless by default;
+- plain-English first;
+- transparent enough to inspect and improve;
+- community-extensible without letting untrusted sources immediately affect the
+  official readout.
 
-### `coinfox intel` — the firehose
-Everything we know about BTC right now, gathered in parallel from:
+## What It Does
 
-| Category      | Sources |
-|---------------|---------|
-| Spot prices   | Binance · Coinbase · Kraken · Bitstamp · CoinGecko |
-| Global market | CoinGecko (mcap, dominance, volume) |
-| Derivatives   | Binance · Bybit · OKX · Deribit (funding, OI, basis) |
-| On-chain      | mempool.space · blockchain.info (fees, hashrate, halving) |
-| Sentiment     | alternative.me Fear & Greed (+ 30d) · CoinGecko community |
-| News          | CoinDesk · Cointelegraph · Bitcoin Magazine · Decrypt · The Block · news.bitcoin.com |
-| Social        | r/Bitcoin top posts |
-| Dev           | bitcoin/bitcoin releases & recent commits |
-| Macro         | DXY · Gold · Silver · WTI · Brent · S&P 500 · US10Y (Stooq) |
+- Fetches public market data from free sources.
+- Produces `LONG`, `SHORT`, or `NEUTRAL` bias reads.
+- Shows probability, confidence, top drivers, and thesis checks.
+- Runs an always-on `pulse` loop for provider health, source health, replay
+  gates, and regime tuning.
+- Exposes an optional FastAPI surface for mobile and service integrations.
+- Keeps source and model logic open for review.
 
-All keyless. All free. Any source failing degrades gracefully.
-
-### `coinfox all` — everything
-Verdict + Call + Intel, one go.
-
-## Install
+## Quick Start
 
 ```bash
 git clone https://github.com/EasternPineVentures/coinfox.git
 cd coinfox
 pip install -r requirements.txt
+pip install -e .
+
+python -m coinfox bias --symbol BTCUSDT --json
+python -m coinfox pulse status
 ```
 
-## Use
+Optional local API:
 
 ```bash
-# Quick verdict on the 1h chart
-python -m coinfox
-
-# Actionable trade idea (entry/stop/target/size)
-python -m coinfox call
-
-# Use derivatives (funding + basis) in the model too
-python -m coinfox call --use-derivs
-
-# Different timeframe / horizon
-python -m coinfox call -t 4h --horizon 6
-
-# The full firehose
-python -m coinfox intel
-
-# Everything together
-python -m coinfox all
-
-# Live refresh
-python -m coinfox watch --watch-loop --interval 30
-
-# 🦊 See who built what (the Hall of Foxes)
-python -m coinfox credits
-
-# 🔌 Scaffold a new source — your name is auto-credited
-python -m coinfox new-source my-source --author your_handle
+pip install -e .[api]
+uvicorn coinfox.api:app --reload --port 8000
+# or
+python -m coinfox api --port 8000
 ```
 
-## How the probability is built
-
-A transparent weighted-confluence model. Each signal votes in `[-1, +1]` with
-an explicit weight. Votes get summed, squashed through a logistic, and
-reported as `P(up over the next N candles)`. **Confidence** reflects
-agreement across signals — low confidence = signals disagree, take it lightly.
-
-Read every line in [`src/coinfox/model.py`](src/coinfox/model.py). Tweak it.
-PR a better one.
-
-## How the call is built
-
-From the verdict, [`src/coinfox/trade.py`](src/coinfox/trade.py) computes:
-
-- **Stop** at `1.5 × ATR(14)` against the bias
-- **Target** at `2.5 × ATR(14)` in favor
-- **R:R** = reward / risk
-- **Size** = `quarter-Kelly × confidence`, **capped at 2% of bankroll**
-- **Gate**: refuses to call a setup if edge < 6%, confidence < 35%, or R:R < 1
-
-So even when probability looks juicy, if signals disagree you'll get
-**STAND ASIDE**. The fox would rather miss a trade than chase a bad one.
-
-## Not financial advice
-
-`coinfox` is an **experimental, educational tool**. It surfaces public info
-and applies a transparent heuristic. It does not know your tax situation,
-your bankroll, your conviction, or the news that breaks five seconds from now.
-
-The call feature exists to help you think — entry, stop, R:R, and a size
-that won't blow you up — but **you** pull the trigger and **you** own the
-outcome. Don't risk money you can't afford to lose.
-
-## Roadmap
-
-- [ ] Backtest harness for the model
-- [ ] More sources (ETF flows, liquidation maps, Lightning, options skew)
-- [ ] JSON output mode for piping into other tools
-- [ ] Webhook / Discord / Telegram notifier
-- [ ] Multi-coin support (ETH, then community choice)
-
-## Join us 🦊
-
-> **Every contributor gets credit, by name, forever.** Your handle goes into
-> the source you wrote, shows up in `coinfox credits` (the Hall of Foxes),
-> and appears in the footer of every `coinfox intel` run that uses your data.
-
-The fastest path from "I have an idea" to "I'm a credited contributor":
+Production-style API server:
 
 ```bash
-python -m coinfox new-source liquidations --author your_handle \
-    --endpoint https://api.example.com/liquidations \
-    --why "track forced selling to spot panic bottoms"
+gunicorn -k uvicorn.workers.UvicornWorker coinfox.api:app --bind 0.0.0.0:8000
 ```
 
-That command:
-1. Drops a working stub at `src/coinfox/sources/liquidations.py` with your
-   name already in the `CONTRIBUTORS` list.
-2. Auto-registers it in the intel aggregator so it runs in parallel with
-   every other source.
-3. Tells you the next 4 steps to ship a PR.
+## Pulse Commands
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide and
-[CONTRIBUTORS.md](CONTRIBUTORS.md) for the Hall of Foxes.
+```bash
+# Provider health, watchdog state, latest AI read
+python -m coinfox pulse status
 
-Other ways to be featured:
-- 🧠 **Tune the probability model** (`src/coinfox/model.py`)
-- 🎨 **Polish the dashboard** (`src/coinfox/dashboard.py`)
-- 📚 **Improve docs**, add examples, ship screenshots
-- 🐛 **Report bugs**, **review PRs**, **help triage Issues**
+# Same output as machine-readable JSON
+python -m coinfox pulse status --json
 
-All contribution types (`source`, `indicator`, `model`, `ui`, `docs`) are
-shown side-by-side in the credits view.
+# Explain what the command means
+python -m coinfox pulse status --explain
 
-**Free BTC info, for everyone, forever.** That's the whole point.
+# Force one pulse cycle now
+python -m coinfox pulse tick
+
+# Show recent pulse reads
+python -m coinfox pulse history
+
+# Online quality report from local history
+python -m coinfox pulse metrics --window 200 --horizon-steps 6
+
+# Deterministic replay quality gate for CI/offline checks
+python -m coinfox pulse replay --synthetic --horizon-steps 3
+
+# Tune regime detector thresholds on deterministic scenarios
+python -m coinfox pulse tune-regime
+
+# Summarize anonymous feedback events
+python -m coinfox pulse feedback-report
+
+# Always-on pulse loop
+python -m coinfox pulse run --interval 300
+```
+
+## API Usage
+
+The HTTP API exposes the same public bias read used by the CLI and the mobile
+Read tab.
+
+```bash
+curl http://localhost:8000/health
+curl "http://localhost:8000/bias?symbol=BTCUSDT"
+curl http://localhost:8000/terms
+curl -X POST http://localhost:8000/feedback ^
+  -H "Content-Type: application/json" ^
+  -d "{\"anonymous_user_id\":\"local-random-id\",\"symbol\":\"BTCUSDT\",\"bias_shown\":\"LONG\",\"confidence_shown\":0.72,\"user_action\":\"thumbs_up\"}"
+```
+
+Full API notes live in [docs/api.md](docs/api.md).
+
+## Plain-English Output Contract
+
+CoinFox is designed so beginners can follow along without needing a finance
+dictionary open in another tab.
+
+Every major readout should explain:
+
+- what the bias is;
+- why the model leans that way;
+- what would weaken the idea;
+- which sources contributed;
+- how confident the system is.
+
+Target contract details live in [docs/bias_output_contract.md](docs/bias_output_contract.md).
+Glossary terms live in [docs/terms.md](docs/terms.md).
+Anonymous feedback learning is documented in [docs/feedback_learning.md](docs/feedback_learning.md).
+
+## Thesis Invalidation
+
+CoinFox uses thesis checks to show where the current idea starts to weaken. For
+example, if CoinFox is leaning `SHORT`, the thesis may weaken above recent
+resistance. If it is leaning `LONG`, the thesis may weaken below recent support.
+
+The invalidation area is not an order instruction. It is a reasoning level where
+the current idea starts to look weaker or wrong.
+
+See [docs/thesis_invalidation.md](docs/thesis_invalidation.md).
+
+## Source And Model Transparency
+
+CoinFox favors inspectable logic over black-box claims. The model combines
+signals such as trend, momentum, volume, volatility, sentiment, and source
+health. Community sources start experimental, must pass health checks, and need
+replay comparison before promotion into official bias logic.
+
+Useful files:
+
+- [src/coinfox/bias.py](src/coinfox/bias.py): public `LONG` / `SHORT` / `NEUTRAL` read.
+- [src/coinfox/model.py](src/coinfox/model.py): transparent weighted signal model.
+- [src/coinfox/ai/regime.py](src/coinfox/ai/regime.py): regime detector and tuner.
+- [src/coinfox/ai/replay.py](src/coinfox/ai/replay.py): replay quality gate.
+- [src/coinfox/community/guard.py](src/coinfox/community/guard.py): contribution safety checks.
+
+## Contributing
+
+CoinFox is built by Eastern Pine Intelligence for a contributor-friendly public
+ecosystem. Start here:
+
+- [CONTRIBUTING.md](CONTRIBUTING.md)
+- [docs/source_contributor_guide.md](docs/source_contributor_guide.md)
+- [docs/model_contributor_guide.md](docs/model_contributor_guide.md)
+- [docs/plain_english_guide.md](docs/plain_english_guide.md)
+- [GOVERNANCE.md](GOVERNANCE.md)
+- [SECURITY.md](SECURITY.md)
+
+## Eastern Pine Ecosystem
+
+CoinFox is built by **Eastern Pine Intelligence**, the open-source technical lab
+from **Eastern Pine Ventures**.
+
+- **Eastern Pine Ventures**: company and umbrella.
+- **Eastern Pine Intelligence**: open-source intelligence lab.
+- **CoinFox**: public market intelligence terminal.
+- **FoxClaw**: deeper internal/operator intelligence system.
+- **Redshift**: simulation, replay, and paper-trading research lane.
+
+## Not Financial Advice
+
+CoinFox is an experimental, educational market-read tool. It surfaces public
+information and applies transparent heuristics. It does not know your financial
+situation, risk tolerance, account size, tax situation, or time horizon.
+
+You own every decision you make. Do not risk money you cannot afford to lose.
 
 ## License
 
-MIT © coinfox contributors
+MIT. See [LICENSE](LICENSE).

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "coinfox"
 version = "0.2.0"
-description = "A fox that watches BTC and estimates the odds. Experimental."
+description = "Free, keyless market intelligence from Eastern Pine Intelligence."
 requires-python = ">=3.9"
 dependencies = [
     "requests>=2.31",
@@ -13,5 +13,15 @@ dependencies = [
     "python-dotenv>=1.0",
 ]
 
+[project.optional-dependencies]
+api = [
+    "fastapi>=0.104",
+    "uvicorn[standard]>=0.24",
+    "httpx>=0.25",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+coinfox = ["assets/*.json"]

@@ -56,7 +56,7 @@ WEIGHTS = {
     "sentiment":   0.7,
     "funding":     0.8,   # derivatives funding rate (contrarian on extremes)
     "basis":       0.5,   # perp basis vs spot
-    "foxclaw_ai":  0.6,   # FoxClaw AI churn signal (gated on freshness + conviction)
+    "ai_context":  0.6,   # Stored AI context signal (gated on freshness + conviction)
 }
 
 # AI signal is only trusted if younger than this
@@ -64,7 +64,7 @@ _AI_MAX_AGE_S = 1800  # 30 minutes
 
 
 def _read_ai_signal() -> Optional[Signal]:
-    """Try to read the latest FoxClaw Thought from SQLite. Fails gracefully."""
+    """Try to read the latest stored AI market read from SQLite. Fails gracefully."""
     try:
         from pathlib import Path
         import sqlite3
@@ -86,8 +86,8 @@ def _read_ai_signal() -> Optional[Signal]:
         conv_scale = max(1, min(5, int(conviction))) / 5.0
         vote = bias_vote * conv_scale
         age_str = f"{age_s // 60}m ago" if age_s >= 60 else f"{age_s}s ago"
-        detail = f"FoxClaw {bias} conv={conviction}/5 ({age_str})"
-        return Signal("foxclaw_ai", vote, WEIGHTS["foxclaw_ai"], detail)
+        detail = f"context {bias} conv={conviction}/5 ({age_str})"
+        return Signal("ai_context", vote, WEIGHTS["ai_context"], detail)
     except Exception:
         return None
 
@@ -202,7 +202,7 @@ def evaluate(
         signals.append(Signal("basis", _clamp(basis_pct * 5.0), WEIGHTS["basis"],
                               f"perp basis {basis_pct:+.3f}%"))
 
-    # FoxClaw AI signal — reads latest stored Thought (fresh only)
+    # AI context signal - reads latest stored market read (fresh only)
     ai_sig = _read_ai_signal()
     if ai_sig is not None:
         signals.append(ai_sig)

@@ -1,0 +1,43 @@
+name: Bias review
+description: Report a LONG/SHORT/NEUTRAL read that needs review.
+title: "[bias] "
+labels: ["model", "bias-review"]
+body:
+  - type: input
+    id: symbol
+    attributes:
+      label: Symbol
+      placeholder: SPY
+    validations:
+      required: true
+  - type: input
+    id: timeframe
+    attributes:
+      label: Timeframe
+      placeholder: 1h
+    validations:
+      required: true
+  - type: dropdown
+    id: bias
+    attributes:
+      label: Reported bias
+      options:
+        - LONG
+        - SHORT
+        - NEUTRAL
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Paste top drivers, thesis-check level, source health, price/range context, and why the read looked wrong or right.
+    validations:
+      required: true
+  - type: textarea
+    id: suggested-thesis-check
+    attributes:
+      label: Suggested thesis check
+      description: If you would place the thesis-check area elsewhere, explain where and why. Do not include private account data.
+    validations:
+      required: false

@@ -1,0 +1,23 @@
+{
+  "expo": {
+    "name": "NY Fox Exchange",
+    "slug": "nyfx-mobile",
+    "scheme": "nyfx",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.easternpineventures.nyfx"
+    },
+    "android": {
+      "package": "com.easternpineventures.nyfx"
+    },
+    "web": {
+      "bundler": "metro"
+    }
+  }
+}

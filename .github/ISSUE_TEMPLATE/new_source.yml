@@ -1,5 +1,5 @@
 name: 🔌 New data source
-description: Suggest a new free BTC data source for coinfox to pull
+description: Suggest a new free market data source for CoinFox to pull
 labels: [source-request, good first issue]
 body:
   - type: input

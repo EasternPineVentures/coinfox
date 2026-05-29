@@ -1,24 +1,25 @@
-name: 🐛 Bug report
-description: Something's broken
-labels: [bug]
+name: Bug report
+description: Something is broken or producing confusing output.
+title: "[bug] "
+labels: ["bug"]
 body:
   - type: textarea
-    id: what
+    id: what-happened
     attributes:
       label: What happened?
+      description: Include the command, symbol, timeframe, and exact output if possible.
     validations:
       required: true
   - type: textarea
-    id: repro
+    id: expected
     attributes:
-      label: Steps to reproduce
+      label: What did you expect?
     validations:
       required: true
-  - type: input
-    id: version
+  - type: textarea
+    id: environment
     attributes:
-      label: coinfox version / commit
-  - type: input
-    id: python
-    attributes:
-      label: Python version & OS
+      label: Environment
+      description: OS, Python version, install method, and whether you used optional API/mobile extras.
+    validations:
+      required: false

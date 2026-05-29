@@ -9,27 +9,13 @@ Tracks per-provider success/failure so flaky endpoints get demoted.
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from .base import AICall, AIResult, Provider, ProviderError
-from .providers import (
-    CerebrasProvider,
-    CloudflareProvider,
-    CodexProvider,
-    CohereProvider,
-    DeepInfraProvider,
-    GeminiProvider,
-    GitHubModelsProvider,
-    GroqProvider,
-    HuggingFaceProvider,
-    MistralProvider,
-    OllamaProvider,
-    OpenRouterFreeProvider,
-    PerplexityProvider,
-    TogetherProvider,
-)
+from .registry import DEFAULT_PROVIDER_ORDER, build_providers, provider_names
 
 
 @dataclass
@@ -49,34 +35,13 @@ class NoFreeProviderError(RuntimeError):
 class FoxClaw:
     """Multi-provider free-AI router."""
 
-    # Default priority: free-est & most-private first.
-    DEFAULT_PRIORITY = [
-        OllamaProvider,            # local, always free, data never leaves PC
-        CerebrasProvider,          # fastest inference, generous free tier
-        GroqProvider,              # very fast, 14k req/day free
-        GeminiProvider,            # solid free tier
-        MistralProvider,           # good free tier
-        GitHubModelsProvider,      # free for any GH user
-        TogetherProvider,          # free credits on signup
-        OpenRouterFreeProvider,    # `:free` models only
-        CloudflareProvider,        # free Workers AI daily quota
-        DeepInfraProvider,         # free trial credits
-        PerplexityProvider,        # sonar: search-grounded reasoning, free tier
-        CohereProvider,            # free trial, structured analysis
-        CodexProvider,             # user's Codex Pro key
-        HuggingFaceProvider,       # serverless inference (slower)
-    ]
-
     ALLOWED_TIERS = {"local", "free", "freemium-with-key"}
 
     def __init__(self, providers: Optional[List[Provider]] = None):
         if providers is None:
-            providers = []
-            for cls in self.DEFAULT_PRIORITY:
-                try:
-                    providers.append(cls())
-                except Exception:  # pragma: no cover
-                    continue
+            env_order = os.environ.get("COINFOX_AI_PROVIDERS", "").strip()
+            names = [n.strip() for n in env_order.split(",") if n.strip()] if env_order else DEFAULT_PROVIDER_ORDER
+            providers = build_providers(names)
         # Hard refusal of paid tiers
         self.providers = [p for p in providers if p.cost_tier in self.ALLOWED_TIERS]
         self.health: Dict[str, Dict[str, int]] = {
@@ -99,6 +64,9 @@ class FoxClaw:
                 "model": getattr(p, "model", ""),
             })
         return out
+
+    def configured_provider_names(self) -> List[str]:
+        return [p.name for p in self.providers]
 
     def ask(self, call: AICall) -> AIResponse:
         tried: List[str] = []
@@ -136,6 +104,8 @@ class FoxClaw:
         raise NoFreeProviderError(
             "No free AI provider could answer. "
             f"Tried: {tried}. Last error: {last_err}. "
+            f"Configured providers: {self.configured_provider_names()}. "
+            f"Available provider keys: {provider_names()}. "
             "Install Ollama (local+free) or set any of: "
             "CEREBRAS_API_KEY, GROQ_API_KEY, GEMINI_API_KEY, MISTRAL_API_KEY, "
             "GITHUB_TOKEN, TOGETHER_API_KEY, OPENROUTER_API_KEY, CF_API_TOKEN, "

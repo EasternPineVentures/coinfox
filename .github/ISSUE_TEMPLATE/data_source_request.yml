@@ -1,0 +1,30 @@
+name: Data source request
+description: Suggest a new free/open market data source.
+title: "[source] "
+labels: ["data-source"]
+body:
+  - type: input
+    id: source-url
+    attributes:
+      label: Source URL
+      placeholder: https://example.com/feed
+    validations:
+      required: true
+  - type: textarea
+    id: value
+    attributes:
+      label: Why does this improve the market read?
+      description: Explain whether it helps trend, range, volatility, macro, news, liquidity, or sentiment.
+    validations:
+      required: true
+  - type: checkboxes
+    id: fit
+    attributes:
+      label: Fit checks
+      options:
+        - label: The source has a free path for default users.
+          required: true
+        - label: The source can fail gracefully without breaking CoinFox.
+          required: true
+        - label: I checked that the terms appear compatible with this use.
+          required: true

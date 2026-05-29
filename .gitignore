@@ -6,3 +6,8 @@ build/
 dist/
 *.egg-info/
 .env
+node_modules/
+mobile/node_modules/
+mobile/.expo/
+mobile/dist/
+mobile/.env

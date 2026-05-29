@@ -1,0 +1,31 @@
+name: community-guard
+
+on:
+  issues:
+    types: [opened, edited]
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+      - name: Write guard summary
+        run: |
+          python -m coinfox.community.guard --event "$GITHUB_EVENT_PATH" --fail-on never >> "$GITHUB_STEP_SUMMARY"
+      - name: Enforce high-risk block
+        run: |
+          python -m coinfox.community.guard --event "$GITHUB_EVENT_PATH" --fail-on high

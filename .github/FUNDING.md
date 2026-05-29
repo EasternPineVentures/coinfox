@@ -1,11 +1,12 @@
-# Tip the foxes 🦊
+# Support CoinFox
 
-coinfox is free forever. No paywalls, no upsells. Maintainers and
-contributors who choose to accept sats can list addresses here:
+CoinFox is free by default. No paywalls, no upsells.
 
-| Fox | BTC / Lightning |
-|-----|-----------------|
-| _your name_ | _your address — add via PR_ |
+Maintainers and contributors who choose to accept tips can list addresses here:
 
-Tips are **never required** to contribute, get help, or have your work
-featured. coinfox stays free.
+| Contributor | BTC / Lightning |
+|-------------|-----------------|
+| _your name_ | _your address - add via PR_ |
+
+Tips are never required to contribute, get help, or have your work featured.
+CoinFox stays free.

@@ -27,3 +27,7 @@ jobs:
           python -c "import coinfox, coinfox.model, coinfox.indicators, coinfox.dashboard, coinfox.intel, coinfox.trade; print('ok', coinfox.__version__)"
       - name: Unit tests
         run: python -m unittest discover -s tests -v
+      - name: Regime benchmark smoke
+        run: python -m coinfox pulse status --benchmark --symbols 25 --updates 120 --window-size 80
+      - name: Replay quality gate smoke
+        run: python -m coinfox pulse replay --synthetic --horizon-steps 3 --min-sample-size 30 --min-hit-rate 0.80 --max-brier 0.25

@@ -1,7 +1,7 @@
 """Perplexity Sonar — free tier with live web search grounding.
 
 This is powerful for BTC: the model can search the web as part of its
-reasoning. Useful for news-heavy churn cycles.
+reasoning. Useful for news-heavy pulse cycles.
 Get a free key: https://www.perplexity.ai/settings/api
 Set PERPLEXITY_API_KEY.
 """
