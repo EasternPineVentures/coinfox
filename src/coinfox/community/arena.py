@@ -1,27 +1,59 @@
-"""Local community arena for foxcoin discussion and prediction markets."""
+"""Local community arena for the NY Fox Exchange (bragging-rights Gold economy).
+
+Currency: Gold (g).  1 unit = 1 gram of gold, for fun only.
+  - Every user starts with STARTING_BALANCE_FC grams.
+  - If you hit 0, you may borrow up to LOAN_MAX_GOLD at LOAN_INTEREST_RATE interest.
+  - Only one open loan at a time; a second borrow is blocked while debt is outstanding.
+"""
 
 from __future__ import annotations
 
-import calendar
 import sqlite3
 import time
 from contextlib import closing
-from dataclasses import dataclass
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
 
+from .market_hours import (
+    NYFE_TIMEZONE,
+    NYFE_OPEN_HOUR,
+    NYFE_OPEN_MINUTE,
+    NYFE_CLOSE_HOUR,
+    NYFE_CLOSE_MINUTE,
+    _market_session,
+    format_market_timestamp,
+    market_now_text,
+    nyfe_timestamp,
+)
+from .models import (
+    ArenaError,
+    Bet,
+    Comment,
+    FeedEvent,
+    Idea,
+    Loan,
+    MarketSession,
+    NotEnoughGold,
+    NotEnoughFoxcoin,
+    Position,
+    PositionMark,
+    Post,
+    Profile,
+    UserAccount,
+    UserStats,
+)
 
-STARTING_BALANCE_FC = 500
-BANKRUPTCY_RESCUE_FC = 100
-BANKRUPTCY_RESCUE_COOLDOWN_S = 30 * 24 * 60 * 60
+
+# ---------------------------------------------------------------------------
+# Economy constants
+# ---------------------------------------------------------------------------
+STARTING_BALANCE_FC = 500          # Gold grams every new user starts with
+LOAN_MAX_GOLD = 1000               # Maximum a user may borrow in one loan
+LOAN_INTEREST_RATE = 0.20          # 20 % interest charged on principal at repayment
+BANKRUPTCY_RESCUE_FC = 100        # kept for backward-compat imports only
+BANKRUPTCY_RESCUE_COOLDOWN_S = 30 * 24 * 60 * 60  # legacy; not used by loan system
 VALID_DIRECTIONS = {"long", "short", "neutral"}
 TRADABLE_DIRECTIONS = {"long", "short"}
-NYFE_TIMEZONE = "America/New_York"
-NYFE_OPEN_HOUR = 9
-NYFE_OPEN_MINUTE = 30
-NYFE_CLOSE_HOUR = 16
-NYFE_CLOSE_MINUTE = 0
 
 
 SCHEMA = """
@@ -118,6 +150,18 @@ CREATE TABLE IF NOT EXISTS posts (
 );
 CREATE INDEX IF NOT EXISTS idx_posts_author_created
     ON posts(author_handle, created_ts DESC);
+CREATE TABLE IF NOT EXISTS loans (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    handle         TEXT NOT NULL,
+    principal_fc   INTEGER NOT NULL,
+    interest_fc    INTEGER NOT NULL,
+    status         TEXT NOT NULL DEFAULT 'open',
+    borrowed_ts    INTEGER NOT NULL,
+    repaid_ts      INTEGER,
+    FOREIGN KEY(handle) REFERENCES users(handle)
+);
+CREATE INDEX IF NOT EXISTS idx_loans_handle_status
+    ON loans(handle, status, borrowed_ts DESC);
 CREATE TABLE IF NOT EXISTS feed_events (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     handle        TEXT,
@@ -132,133 +176,6 @@ CREATE TABLE IF NOT EXISTS feed_events (
 CREATE INDEX IF NOT EXISTS idx_feed_events_created
     ON feed_events(created_ts DESC, id DESC);
 """
-
-
-class ArenaError(ValueError):
-    """Raised when a community action cannot be completed."""
-
-
-class NotEnoughFoxcoin(ArenaError):
-    """Raised when a user tries to bet more foxcoin than they have."""
-
-
-@dataclass(frozen=True)
-class UserAccount:
-    handle: str
-    balance_fc: int
-    created_ts: int
-
-
-@dataclass(frozen=True)
-class Profile:
-    handle: str
-    display_name: str
-    bio: str
-    created_ts: int
-    updated_ts: int
-
-
-@dataclass(frozen=True)
-class MarketSession:
-    is_open: bool
-    opens_at_ts: int
-    closes_at_ts: int
-    timezone: str = "America/New_York"
-
-
-@dataclass(frozen=True)
-class Idea:
-    id: int
-    author_handle: str
-    title: str
-    body: str
-    symbol: str
-    bias: str
-    status: str
-    resolution_rule: str
-    closes_ts: Optional[int]
-    created_ts: int
-    resolved_ts: Optional[int]
-    outcome: Optional[str]
-    resolver_handle: Optional[str]
-
-
-@dataclass(frozen=True)
-class Comment:
-    id: int
-    idea_id: int
-    author_handle: str
-    body: str
-    created_ts: int
-
-
-@dataclass(frozen=True)
-class Bet:
-    id: int
-    idea_id: int
-    handle: str
-    direction: str
-    amount_fc: int
-    payout_fc: int
-    status: str
-    placed_ts: int
-    settled_ts: Optional[int]
-
-
-@dataclass(frozen=True)
-class Position:
-    id: int
-    handle: str
-    symbol: str
-    direction: str
-    amount_fc: int
-    entry_price: float
-    exit_price: Optional[float]
-    status: str
-    realized_pnl_fc: int
-    opened_ts: int
-    closed_ts: Optional[int]
-
-
-@dataclass(frozen=True)
-class PositionMark:
-    position: Position
-    current_price: Optional[float]
-    unrealized_pnl_fc: Optional[int]
-    gross_value_fc: Optional[int]
-
-
-@dataclass(frozen=True)
-class UserStats:
-    handle: str
-    balance_fc: int
-    open_positions: int
-    closed_positions: int
-    winning_positions: int
-    losing_positions: int
-    realized_pnl_fc: int
-    unrealized_pnl_fc: int
-    total_staked_fc: int
-
-
-@dataclass(frozen=True)
-class Post:
-    id: int
-    author_handle: str
-    body: str
-    created_ts: int
-
-
-@dataclass(frozen=True)
-class FeedEvent:
-    id: int
-    handle: Optional[str]
-    event_type: str
-    ref_kind: Optional[str]
-    ref_id: Optional[int]
-    headline: str
-    body: str
-    created_ts: int
 
 
 class Arena:
@@ -877,31 +794,118 @@ class Arena:
         assert resolved is not None
         return resolved
 
-    def rescue(self, handle: str) -> UserAccount:
+    # ------------------------------------------------------------------
+    # Gold loan system  (replaces the old bankruptcy rescue)
+    # ------------------------------------------------------------------
+
+    def borrow_gold(self, handle: str, amount: int = LOAN_MAX_GOLD) -> "Loan":
+        """Borrow up to LOAN_MAX_GOLD when balance is exactly 0.
+
+        Rules:
+        - Balance must be 0 (you must be completely out).
+        - No existing open loan for this handle.
+        - Amount capped at LOAN_MAX_GOLD.
+        - Interest of LOAN_INTEREST_RATE is pre-calculated and stored;
+          total repayment = principal + interest.
+        """
         user = self.ensure_user(handle)
         if user.balance_fc != 0:
-            raise ArenaError("bankruptcy rescue is only available at exactly 0 FC")
+            raise ArenaError(
+                f"Loans are only available at exactly 0 Gold — you still have {user.balance_fc} g."
+            )
+        borrow_amount = max(1, min(int(amount), LOAN_MAX_GOLD))
         now = int(time.time())
         with closing(self._connect()) as conn, conn:
-            row = conn.execute(
-                """
-                SELECT MAX(created_ts) AS rescue_ts
-                FROM wallet_ledger
-                WHERE handle = ? AND reason = 'bankruptcy_rescue'
-                """,
+            open_loan = conn.execute(
+                "SELECT id FROM loans WHERE handle = ? AND status = 'open' LIMIT 1",
                 (user.handle,),
             ).fetchone()
-            rescue_ts = int(row["rescue_ts"]) if row and row["rescue_ts"] is not None else None
-            if rescue_ts is not None and now - rescue_ts < BANKRUPTCY_RESCUE_COOLDOWN_S:
-                raise ArenaError("bankruptcy rescue is cooling down")
+            if open_loan is not None:
+                raise ArenaError(
+                    "You already have an open loan. Repay it first before borrowing again."
+                )
+            interest_fc = int(round(borrow_amount * LOAN_INTEREST_RATE))
+            cur = conn.execute(
+                """
+                INSERT INTO loans(handle, principal_fc, interest_fc, status, borrowed_ts)
+                VALUES(?, ?, ?, 'open', ?)
+                """,
+                (user.handle, borrow_amount, interest_fc, now),
+            )
+            loan_id = int(cur.lastrowid)
             self._record_ledger(
                 conn,
                 user.handle,
-                BANKRUPTCY_RESCUE_FC,
-                "bankruptcy_rescue",
+                borrow_amount,
+                "loan_disbursement",
+                ref_kind="loan",
+                ref_id=loan_id,
                 created_ts=now,
             )
-        return self.ensure_user(user.handle)
+        return self._get_loan(loan_id)
+
+    def repay_gold(self, handle: str, amount: Optional[int] = None) -> "Loan":
+        """Repay the outstanding open loan (principal + interest).
+
+        If *amount* is None, repays the full outstanding amount.
+        Partial repayment is not supported — amount must equal the full debt.
+        """
+        user = self.ensure_user(handle)
+        with closing(self._connect()) as conn, conn:
+            row = conn.execute(
+                "SELECT * FROM loans WHERE handle = ? AND status = 'open' ORDER BY borrowed_ts ASC LIMIT 1",
+                (user.handle,),
+            ).fetchone()
+            if row is None:
+                raise ArenaError("You have no open loan to repay.")
+            loan_id = int(row["id"])
+            total_owed = int(row["principal_fc"]) + int(row["interest_fc"])
+            if amount is not None and int(amount) != total_owed:
+                raise ArenaError(
+                    f"Repayment must be the full debt: {total_owed} g "
+                    f"({row['principal_fc']} principal + {row['interest_fc']} interest)."
+                )
+            if user.balance_fc < total_owed:
+                raise ArenaError(
+                    f"Not enough Gold to repay — you owe {total_owed} g but only have {user.balance_fc} g."
+                )
+            now = int(time.time())
+            self._record_ledger(
+                conn,
+                user.handle,
+                -total_owed,
+                "loan_repayment",
+                ref_kind="loan",
+                ref_id=loan_id,
+                created_ts=now,
+            )
+            conn.execute(
+                "UPDATE loans SET status = 'repaid', repaid_ts = ? WHERE id = ?",
+                (now, loan_id),
+            )
+        return self._get_loan(loan_id)
+
+    def open_loan(self, handle: str) -> Optional["Loan"]:
+        """Return the user's current open loan, or None if they have none."""
+        normalized = _normalize_handle(handle)
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT * FROM loans WHERE handle = ? AND status = 'open' ORDER BY borrowed_ts ASC LIMIT 1",
+                (normalized,),
+            ).fetchone()
+        return _loan_from_row(row) if row is not None else None
+
+    def _get_loan(self, loan_id: int) -> "Loan":
+        with closing(self._connect()) as conn:
+            row = conn.execute("SELECT * FROM loans WHERE id = ?", (loan_id,)).fetchone()
+        if row is None:
+            raise ArenaError(f"loan {loan_id} does not exist")
+        return _loan_from_row(row)
+
+    def rescue(self, handle: str) -> UserAccount:
+        """Legacy rescue — kept for test backward-compat; delegates to borrow_gold."""
+        loan = self.borrow_gold(handle, BANKRUPTCY_RESCUE_FC)
+        return self.ensure_user(handle)
 
     def leaderboard(self, limit: int = 10) -> List[UserAccount]:
         with closing(self._connect()) as conn:
@@ -1036,31 +1040,6 @@ def _normalize_trade_direction(direction: str) -> str:
     return normalized
 
 
-def _market_session(now_ts: Optional[int] = None) -> MarketSession:
-    now_local = _eastern_from_timestamp(now_ts)
-    open_dt = now_local.replace(hour=NYFE_OPEN_HOUR, minute=NYFE_OPEN_MINUTE, second=0, microsecond=0)
-    close_dt = now_local.replace(hour=NYFE_CLOSE_HOUR, minute=NYFE_CLOSE_MINUTE, second=0, microsecond=0)
-    is_weekday = now_local.weekday() < 5
-    is_open = is_weekday and open_dt <= now_local < close_dt
-
-    if is_open:
-        next_open = open_dt
-        next_close = close_dt
-    else:
-        if is_weekday and now_local < open_dt:
-            next_open = open_dt
-        else:
-            next_open = open_dt + timedelta(days=1)
-            while next_open.weekday() >= 5:
-                next_open += timedelta(days=1)
-        next_close = next_open.replace(hour=NYFE_CLOSE_HOUR, minute=NYFE_CLOSE_MINUTE, second=0, microsecond=0)
-    return MarketSession(
-        is_open=is_open,
-        opens_at_ts=_eastern_to_timestamp(next_open),
-        closes_at_ts=_eastern_to_timestamp(next_close),
-    )
-
-
 def _settle_position_amount(amount_fc: int, direction: str, entry_price: float, exit_price: float) -> tuple[int, int]:
     if entry_price <= 0 or exit_price <= 0:
         raise ArenaError("position prices must be positive")
@@ -1070,61 +1049,6 @@ def _settle_position_amount(amount_fc: int, direction: str, entry_price: float, 
     payout_fc = max(0, payout_fc)
     pnl_fc = payout_fc - int(amount_fc)
     return payout_fc, pnl_fc
-
-
-def nyfe_timestamp(year: int, month: int, day: int, hour: int, minute: int) -> int:
-    return _eastern_to_timestamp(datetime(year, month, day, hour, minute))
-
-
-def format_market_timestamp(ts: int) -> str:
-    eastern = _eastern_from_timestamp(ts)
-    return eastern.strftime("%a %I:%M %p") + f" {_eastern_tz_abbrev(eastern)}"
-
-
-def market_now_text(now_ts: Optional[int] = None) -> str:
-    eastern = _eastern_from_timestamp(now_ts)
-    return eastern.strftime("%a %I:%M %p") + f" {_eastern_tz_abbrev(eastern)}"
-
-
-def _eastern_from_timestamp(now_ts: Optional[int] = None) -> datetime:
-    utc_dt = datetime.utcfromtimestamp(now_ts if now_ts is not None else time.time())
-    offset_hours = _eastern_utc_offset_hours(utc_dt)
-    return utc_dt + timedelta(hours=offset_hours)
-
-
-def _eastern_to_timestamp(local_dt: datetime) -> int:
-    offset_hours = _eastern_local_offset_hours(local_dt)
-    utc_dt = local_dt - timedelta(hours=offset_hours)
-    return int(calendar.timegm(utc_dt.timetuple()))
-
-
-def _eastern_tz_abbrev(local_dt: datetime) -> str:
-    return "EDT" if _eastern_local_offset_hours(local_dt) == -4 else "EST"
-
-
-def _eastern_utc_offset_hours(utc_dt: datetime) -> int:
-    start_utc, end_utc = _us_eastern_dst_bounds_utc(utc_dt.year)
-    return -4 if start_utc <= utc_dt < end_utc else -5
-
-
-def _eastern_local_offset_hours(local_dt: datetime) -> int:
-    start_local = datetime(local_dt.year, 3, _nth_weekday_of_month(local_dt.year, 3, 6, 2), 2, 0)
-    end_local = datetime(local_dt.year, 11, _nth_weekday_of_month(local_dt.year, 11, 6, 1), 2, 0)
-    return -4 if start_local <= local_dt < end_local else -5
-
-
-def _us_eastern_dst_bounds_utc(year: int) -> tuple[datetime, datetime]:
-    start_day = _nth_weekday_of_month(year, 3, 6, 2)
-    end_day = _nth_weekday_of_month(year, 11, 6, 1)
-    start_utc = datetime(year, 3, start_day, 7, 0)
-    end_utc = datetime(year, 11, end_day, 6, 0)
-    return start_utc, end_utc
-
-
-def _nth_weekday_of_month(year: int, month: int, weekday: int, occurrence: int) -> int:
-    first = datetime(year, month, 1)
-    delta = (weekday - first.weekday()) % 7
-    return 1 + delta + (occurrence - 1) * 7
 
 
 def _idea_from_row(row: sqlite3.Row) -> Idea:
@@ -1204,6 +1128,18 @@ def _position_from_row(row: sqlite3.Row) -> Position:
         realized_pnl_fc=int(row["realized_pnl_fc"]),
         opened_ts=int(row["opened_ts"]),
         closed_ts=int(row["closed_ts"]) if row["closed_ts"] is not None else None,
+    )
+
+
+def _loan_from_row(row: sqlite3.Row) -> "Loan":
+    return Loan(
+        id=int(row["id"]),
+        handle=str(row["handle"]),
+        principal_fc=int(row["principal_fc"]),
+        interest_fc=int(row["interest_fc"]),
+        status=str(row["status"]),
+        borrowed_ts=int(row["borrowed_ts"]),
+        repaid_ts=int(row["repaid_ts"]) if row["repaid_ts"] is not None else None,
     )
 
 

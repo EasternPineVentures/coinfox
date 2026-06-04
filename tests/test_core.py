@@ -171,10 +171,11 @@ class TestArena(unittest.TestCase):
         self.assertEqual(self.arena.balance("beta"), STARTING_BALANCE_FC - 40)
 
     def test_bankruptcy_rescue_requires_zero_balance(self):
+        """rescue() now delegates to borrow_gold(); second call blocked while loan is open."""
         self.arena.ensure_user("gamma")
         market_open_ts = nyfe_timestamp(2026, 6, 1, 10, 0)
         with self.assertRaises(ArenaError):
-            self.arena.rescue("gamma")
+            self.arena.rescue("gamma")  # fails: non-zero balance
 
         idea = self.arena.create_idea(
             author_handle="gamma",
@@ -187,8 +188,10 @@ class TestArena(unittest.TestCase):
         self.arena.place_bet(idea.id, "gamma", "long", STARTING_BALANCE_FC, now_ts=market_open_ts)
         self.arena.resolve_idea(idea.id, "short", "gamma")
 
+        # Now at 0 balance — rescue() should succeed via loan
         rescued = self.arena.rescue("gamma")
         self.assertEqual(rescued.balance_fc, BANKRUPTCY_RESCUE_FC)
+        # Second call blocked while loan is open
         with self.assertRaises(ArenaError):
             self.arena.rescue("gamma")
 
@@ -285,6 +288,69 @@ class TestArena(unittest.TestCase):
                 now_ts=nyfe_timestamp(2026, 6, 1, 18, 0),
                 price=100.0,
             )
+
+    def test_borrow_gold_only_at_zero_balance(self):
+        """borrow_gold raises when balance > 0."""
+        self.arena.ensure_user("borrowfox")
+        with self.assertRaises(ArenaError):
+            self.arena.borrow_gold("borrowfox", 500)
+
+    def test_borrow_gold_full_flow(self):
+        """Zero out, borrow, check balance, block second borrow, repay."""
+        from coinfox.community.arena import LOAN_INTEREST_RATE, LOAN_MAX_GOLD
+        market_open_ts = nyfe_timestamp(2026, 6, 1, 10, 0)
+        idea = self.arena.create_idea(
+            author_handle="loanfox",
+            title="test idea",
+            body="Testing loan flow.",
+            symbol="BTCUSDT",
+            bias="long",
+            resolution_rule="Closes green.",
+        )
+        self.arena.place_bet(idea.id, "loanfox", "long", STARTING_BALANCE_FC, now_ts=market_open_ts)
+        self.arena.resolve_idea(idea.id, "short", "loanfox")
+        self.assertEqual(self.arena.balance("loanfox"), 0)
+
+        loan = self.arena.borrow_gold("loanfox", 400)
+        self.assertEqual(loan.principal_fc, 400)
+        self.assertEqual(loan.interest_fc, int(round(400 * LOAN_INTEREST_RATE)))
+        self.assertEqual(loan.status, "open")
+        self.assertEqual(self.arena.balance("loanfox"), 400)
+
+        # second borrow blocked
+        with self.assertRaises(ArenaError):
+            self.arena.borrow_gold("loanfox", 100)
+
+        # repay
+        total_owed = loan.principal_fc + loan.interest_fc
+        # top up so user can repay
+        conn = self.arena._connect()
+        conn.execute(
+            "INSERT INTO wallet_ledger(handle, delta_fc, reason, created_ts) VALUES(?,?,?,?)",
+            ("loanfox", total_owed - 400, "test_topup", int(__import__("time").time())),
+        )
+        conn.commit()
+        conn.close()
+        repaid = self.arena.repay_gold("loanfox")
+        self.assertEqual(repaid.status, "repaid")
+        self.assertIsNone(self.arena.open_loan("loanfox"))
+
+    def test_borrow_gold_capped_at_max(self):
+        """Borrowing more than LOAN_MAX_GOLD is silently capped."""
+        from coinfox.community.arena import LOAN_MAX_GOLD
+        market_open_ts = nyfe_timestamp(2026, 6, 1, 10, 0)
+        idea = self.arena.create_idea(
+            author_handle="capfox",
+            title="cap test",
+            body="Cap test.",
+            symbol="BTCUSDT",
+            bias="long",
+            resolution_rule="Closes green.",
+        )
+        self.arena.place_bet(idea.id, "capfox", "long", STARTING_BALANCE_FC, now_ts=market_open_ts)
+        self.arena.resolve_idea(idea.id, "short", "capfox")
+        loan = self.arena.borrow_gold("capfox", LOAN_MAX_GOLD + 9999)
+        self.assertLessEqual(loan.principal_fc, LOAN_MAX_GOLD)
 
 
 class TestChurnReliability(unittest.TestCase):

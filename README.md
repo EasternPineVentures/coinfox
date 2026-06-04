@@ -46,13 +46,65 @@ pretends uncertainty does not exist. CoinFox takes the opposite path:
 - Exposes an optional FastAPI surface for mobile and service integrations.
 - Keeps source and model logic open for review.
 
+## Repository Map & Handoff
+
+> **Read this first when picking the project back up (human or AI agent).** It
+> pins down *what* CoinFox is and *where* everything lives so parallel work does
+> not create overlapping or duplicate files.
+
+### Project identity
+
+| Field | Value |
+| --- | --- |
+| Repo | `EasternPineVentures/coinfox` |
+| Python package | `coinfox` (version in [src/coinfox/__init__.py](src/coinfox/__init__.py)) |
+| Layout | **src-layout** - all importable code lives under [src/coinfox/](src/coinfox/) |
+| Python | 3.9+ |
+| Single source of truth for deps | [pyproject.toml](pyproject.toml) (`requirements.txt` just resolves it) |
+
+> Important: CoinFox is **not** a flat module layout. If you remember top-level
+> command modules beside `src/`, that is a stale picture - the
+> code now lives under `src/coinfox/`. Always confirm against `src/coinfox/`
+> before adding files.
+
+### Where things live
+
+| Path | What it is |
+| --- | --- |
+| [src/coinfox/__main__.py](src/coinfox/__main__.py) | CLI entrypoint (`python -m coinfox`) - all subcommands |
+| [src/coinfox/model.py](src/coinfox/model.py) and [bias.py](src/coinfox/bias.py) | transparent weighted signal model + LONG/SHORT/NEUTRAL read |
+| [src/coinfox/sources/](src/coinfox/sources/) | free public data feeds (prices, news, on-chain, macro, derivatives, and more) |
+| [src/coinfox/ai/](src/coinfox/ai/) | AI router (`FoxClaw`), provider registry, pulse loop, regime, replay |
+| [src/coinfox/community/](src/coinfox/community/) | arena: play-money "NY Fox Exchange", FC currency, ideas, bets, feed |
+| [src/coinfox/feedback/](src/coinfox/feedback/) | anonymous feedback learning |
+| [src/coinfox/api.py](src/coinfox/api.py) | FastAPI HTTP surface |
+| [mobile/](mobile/) | Expo / React Native "Read" app |
+| [docs/](docs/) | contracts, contributor guides, roadmaps |
+| [tests/](tests/) | test suite (run before every handoff) |
+
+### Set up and verify
+
+```bash
+pip install -e .[api]      # core + API + everything tests need
+python -m pytest -q        # or: python -m unittest discover -s tests
+python -m coinfox bias --symbol BTCUSDT --json
+```
+
+### Product boundaries (keep scope clean)
+
+CoinFox is the *public, keyless terminal*. **FoxClaw** (deeper operator
+intelligence) and **Redshift** (simulation/replay) are separate products; see
+[Eastern Pine Ecosystem](#eastern-pine-ecosystem). Note: the class named
+`FoxClaw` inside [src/coinfox/ai/router.py](src/coinfox/ai/router.py) is just the
+internal AI router, not the FoxClaw product.
+
 ## Quick Start
 
 ```bash
 git clone https://github.com/EasternPineVentures/coinfox.git
 cd coinfox
-pip install -r requirements.txt
-pip install -e .
+pip install -e .          # core (keyless) install
+# pip install -e .[api]   # add the optional HTTP API server
 
 python -m coinfox bias --symbol BTCUSDT --json
 python -m coinfox pulse status

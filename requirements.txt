@@ -1,5 +1,8 @@
-requests>=2.31
-rich>=13.7
-fastapi>=0.104
-uvicorn[standard]>=0.24
-httpx>=0.25
+# CoinFox dependencies - single source of truth is pyproject.toml.
+#
+#   [project].dependencies                      -> core runtime (requests, rich, python-dotenv)
+#   [project.optional-dependencies].api         -> HTTP API server (fastapi, uvicorn, httpx)
+#
+# Installing this file resolves both groups from pyproject so the two never drift.
+# Core-only install (no API server):  pip install -e .
+-e .[api]
