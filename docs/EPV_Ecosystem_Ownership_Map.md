@@ -14,9 +14,11 @@ This document defines repo-level ownership boundaries across the EPV stack so en
 
 ## Executive Summary
 - coinfox is the public intelligence and community arena surface.
-- foxclaw is the operator/runtime and execution-orchestration product surface.
-- redshift_core is the strategy/backtest/relay core with capital-box controls.
+- foxclaw is the guarded operator/runtime product surface for safer strategy operation and bounded self-repair.
+- redshift_core is the higher-risk strategy/backtest/replay/relay research lane with capital-box controls.
 - foxcoin currently has no implemented footprint and should be either scoped or archived.
+
+For risk posture and capital-authority boundaries, see [ecosystem_risk_tiers.md](ecosystem_risk_tiers.md).
 
 ## Domain Ownership Matrix
 
@@ -25,10 +27,12 @@ This document defines repo-level ownership boundaries across the EPV stack so en
 | Public market-intel CLI/API | coinfox | foxclaw, redshift_core consume outputs | Live execution control |
 | Community social + arena economy | coinfox | none | Real-money settlement |
 | AI pulse context loop | coinfox | foxclaw may consume outputs | Venue-level order logic |
-| Operator workflows + runtime UX | foxclaw | none | Public OSS docs surface |
+| Guarded operator workflows + runtime UX | foxclaw | redshift_core context | Public OSS docs surface |
+| Safer strategy operation + bounded self-repair | foxclaw | redshift_core research context | High-risk experiment ownership |
 | Venue routing + execution orchestration | foxclaw | redshift_core integration | Public educational CLI |
 | Canonical strategy abstraction | redshift_core | foxclaw | Social/community features |
 | Canonical backtesting engine | redshift_core | foxclaw | Community arena scoring |
+| Higher-risk replay/research lane | redshift_core | foxclaw consumes reviewed context | Public product instructions |
 | Relay safety controls (capital box lane) | redshift_core | foxclaw | Product marketing/UI |
 | Tokenomics layer | foxcoin (unassigned) | none | Current production runtime |
 
@@ -40,8 +44,8 @@ This document defines repo-level ownership boundaries across the EPV stack so en
 - Anti-pattern to avoid: embedding venue-specific routing behavior in coinfox.
 
 ### 2) foxclaw -> redshift_core
-- Contract: strategy signal intake + relay into simulation/execution lanes with policy gates.
-- Guarantee: execution requests remain behind redshift capital-box constraints.
+- Contract: guarded operator signal intake + relay into simulation/execution-research lanes with policy gates.
+- Guarantee: FoxClaw can use Redshift context, but Redshift posture does not become FoxClaw capital approval.
 - Anti-pattern to avoid: duplicating full strategy/backtest frameworks inside foxclaw.
 
 ### 3) coinfox <-> redshift_core

@@ -39,6 +39,7 @@ Prepared for: EPV cross-repo consolidation and governance
 - Add dead-letter handling and operator alert semantics.
 
 ### OR-03: Execution boundary drift
+- Use [ecosystem_risk_tiers.md](ecosystem_risk_tiers.md) as the plain-English risk and authority reference.
 - Add static policy check in coinfox CI for prohibited execution primitives.
 - Add architecture test gate requiring explicit approval for new cross-boundary modules.
 - Add decision record template for contract changes.

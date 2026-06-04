@@ -268,8 +268,12 @@ from **Eastern Pine Ventures**.
 - **Eastern Pine Ventures**: company and umbrella.
 - **Eastern Pine Intelligence**: open-source intelligence lab.
 - **CoinFox**: public market intelligence terminal.
-- **FoxClaw**: deeper internal/operator intelligence system.
-- **Redshift**: simulation, replay, and paper-trading research lane.
+- **Planifier**: guided planning and beginner workflow surface.
+- **FoxClaw**: guarded internal/operator intelligence system for safer strategy operation.
+- **Redshift**: higher-risk simulation, replay, and execution-research lane.
+
+Risk tiers and capital-authority boundaries are documented in
+[docs/ecosystem_risk_tiers.md](docs/ecosystem_risk_tiers.md).
 
 ## Not Financial Advice
 

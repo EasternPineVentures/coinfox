@@ -68,6 +68,7 @@ CoinFox is educational/intelligence software. It is not an execution runtime.
   - Optional AI provider APIs via router/provider modules in [src/coinfox/ai/providers](src/coinfox/ai/providers)
 - Cross-product contract intent (documented in-repo):
   - CoinFox outputs intelligence artifacts; execution must remain outside CoinFox boundaries.
+  - Ecosystem risk tiers live in [docs/ecosystem_risk_tiers.md](docs/ecosystem_risk_tiers.md): CoinFox is public intelligence, Planifier is guided learning, FoxClaw is guarded safer-operator intelligence, and Redshift is higher-risk research/simulation.
 
 ## Overlap Risks
 - Brand/name confusion risk:
