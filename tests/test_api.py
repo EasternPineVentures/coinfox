@@ -56,6 +56,17 @@ class TestCoinFoxApi(unittest.TestCase):
         self.assertEqual(response.json()["status"], "ok")
         self.assertIn("timestamp", response.json())
 
+    def test_cors_allows_future_coinfox_cloud_origin(self):
+        response = self.client.options(
+            "/health",
+            headers={
+                "Origin": "https://coinfox.cloud",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["access-control-allow-origin"], "https://coinfox.cloud")
+
     def test_terms_matches_packaged_terms_file(self):
         response = self.client.get("/terms")
         self.assertEqual(response.status_code, 200)

@@ -7,13 +7,37 @@ control accounts, or require exchange keys.
 Run locally:
 
 ```bash
-python -m coinfox api --port 8000
+python -m coinfox api --host 0.0.0.0 --port 8000
+```
+
+Local base URL:
+
+```text
+http://localhost:8000
+```
+
+For a phone on the same Wi-Fi network, replace `localhost` with the computer's
+LAN address, for example `http://192.168.1.25:8000`.
+
+Future production shape:
+
+```text
+https://coinfox.cloud      public web/mobile landing surface
+https://api.coinfox.cloud  CoinFox HTTP API
 ```
 
 Production-style example:
 
 ```bash
 gunicorn -k uvicorn.workers.UvicornWorker coinfox.api:app --bind 0.0.0.0:8000
+```
+
+Set the mobile app API target with:
+
+```bash
+EXPO_PUBLIC_COINFOX_API_URL=http://localhost:8000
+# later:
+EXPO_PUBLIC_COINFOX_API_URL=https://api.coinfox.cloud
 ```
 
 ## GET /health

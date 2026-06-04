@@ -7,7 +7,11 @@ import type {
   User
 } from "../types";
 
-export const API_URL = (process.env.EXPO_PUBLIC_NYFX_API_URL || "http://localhost:8000").replace(/\/$/, "");
+const configuredApiUrl = process.env.EXPO_PUBLIC_COINFOX_API_URL
+  || process.env.EXPO_PUBLIC_NYFX_API_URL
+  || "http://localhost:8000";
+
+export const API_URL = configuredApiUrl.replace(/\/$/, "");
 
 export type BiasDirection = "LONG" | "SHORT" | "NEUTRAL";
 export type BiasDriver = {
@@ -62,12 +66,12 @@ type RequestOptions = RequestInit & {
   userId?: string | null;
 };
 
-class NyfxApiError extends Error {
+class CoinFoxApiError extends Error {
   status: number;
 
   constructor(status: number, message: string) {
     super(message);
-    this.name = "NyfxApiError";
+    this.name = "CoinFoxApiError";
     this.status = status;
   }
 }
@@ -93,7 +97,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     const detail = typeof payload === "object" && payload !== null && "detail" in payload
       ? String(payload.detail)
       : `Request failed with status ${res.status}`;
-    throw new NyfxApiError(res.status, detail);
+    throw new CoinFoxApiError(res.status, detail);
   }
   return payload as T;
 }

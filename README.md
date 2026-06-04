@@ -114,10 +114,15 @@ Optional local API:
 
 ```bash
 pip install -e .[api]
-uvicorn coinfox.api:app --reload --port 8000
+uvicorn coinfox.api:app --reload --host 0.0.0.0 --port 8000
 # or
-python -m coinfox api --port 8000
+python -m coinfox api --host 0.0.0.0 --port 8000
 ```
+
+Local mobile/web clients should point at `http://localhost:8000` on the same
+machine, or at your computer's LAN address from a physical phone. The intended
+production split is `https://coinfox.cloud` for the public app and
+`https://api.coinfox.cloud` for the API.
 
 Production-style API server:
 
@@ -163,6 +168,18 @@ python -m coinfox pulse run --interval 300
 
 The HTTP API exposes the same public bias read used by the CLI and the mobile
 Read tab.
+
+Local base URL:
+
+```text
+http://localhost:8000
+```
+
+Future production API base URL:
+
+```text
+https://api.coinfox.cloud
+```
 
 ```bash
 curl http://localhost:8000/health

@@ -51,12 +51,13 @@ import {
   type BiasDirection,
   type BiasRead,
   type FeedMessage
-} from "./src/api/nyfx";
+} from "./src/api/coinfox";
 import { TERMS } from "./src/terms";
 import { colors, radii, shadow } from "./src/theme";
 import type { Comment, Direction, PredictionOutcome, TradePost, TradePostDraft, User as Trader } from "./src/types";
 
-const USER_ID_KEY = "nyfx.currentUserId";
+const USER_ID_KEY = "coinfox.currentUserId";
+const LEGACY_USER_ID_KEY = "nyfx.currentUserId";
 const ANONYMOUS_ID_KEY = "coinfox.anonymousUserId";
 const INITIAL_DRAFT: FormDraft = {
   symbol: "SPY",
@@ -254,11 +255,15 @@ export default function App() {
   }, [readSymbol]);
 
   useEffect(() => {
-    AsyncStorage.getItem(USER_ID_KEY)
-      .then((storedUserId) => {
-        if (storedUserId) {
-          setUserId(storedUserId);
-          void refresh(storedUserId, true);
+    Promise.all([AsyncStorage.getItem(USER_ID_KEY), AsyncStorage.getItem(LEGACY_USER_ID_KEY)])
+      .then(async ([storedUserId, legacyUserId]) => {
+        const resolvedUserId = storedUserId || legacyUserId;
+        if (legacyUserId && !storedUserId) {
+          await AsyncStorage.setItem(USER_ID_KEY, legacyUserId);
+        }
+        if (resolvedUserId) {
+          setUserId(resolvedUserId);
+          void refresh(resolvedUserId, true);
         } else {
           setLoading(false);
         }
@@ -341,6 +346,7 @@ export default function App() {
 
   const handleSignOut = async () => {
     await AsyncStorage.removeItem(USER_ID_KEY);
+    await AsyncStorage.removeItem(LEGACY_USER_ID_KEY);
     setUserId(null);
     setTrader(null);
     setPosts([]);
