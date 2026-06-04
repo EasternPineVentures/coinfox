@@ -8,6 +8,7 @@ The app starts local by default:
 
 ```bash
 EXPO_PUBLIC_COINFOX_API_URL=http://localhost:8000
+EXPO_PUBLIC_COINFOX_WEB_URL=http://localhost:8081
 ```
 
 For a physical phone, `localhost` points at the phone, not the computer. Use the computer LAN address instead:
@@ -20,9 +21,28 @@ When the public backend is ready, the intended production target is:
 
 ```bash
 EXPO_PUBLIC_COINFOX_API_URL=https://api.coinfox.cloud
+EXPO_PUBLIC_COINFOX_WEB_URL=https://coinfox.cloud
 ```
 
 The old `EXPO_PUBLIC_NYFX_API_URL` variable still works as a temporary local fallback, but new setups should use `EXPO_PUBLIC_COINFOX_API_URL`.
+
+## Direct Links
+
+CoinFox supports shareable read and setup links. On local web, examples look like:
+
+```text
+http://localhost:8081?screen=read&symbol=BTCUSDT
+http://localhost:8081?screen=desk&post=<post-id>
+```
+
+The installed app can also receive scheme links:
+
+```text
+coinfox://read/BTCUSDT
+coinfox://post/<post-id>
+```
+
+When `coinfox.cloud` is live, shared links should use `https://coinfox.cloud` so they open cleanly in a browser and can later route into the installed mobile app.
 
 ## Run
 

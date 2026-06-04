@@ -10,6 +10,7 @@ import {
   Plus,
   RefreshCcw,
   Send,
+  Share2,
   ShieldCheck,
   Target,
   TrendingDown,
@@ -24,11 +25,13 @@ import type { ComponentProps, Dispatch, ReactElement, SetStateAction } from "rea
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   Pressable,
   RefreshControl,
   SafeAreaView,
   ScrollView,
+  Share,
   StatusBar,
   StyleSheet,
   Text,
@@ -52,6 +55,13 @@ import {
   type BiasRead,
   type FeedMessage
 } from "./src/api/coinfox";
+import {
+  buildPostShareUrl,
+  buildReadShareUrl,
+  currentWebUrl,
+  parseCoinFoxDirectLink,
+  type DirectLinkTarget
+} from "./src/links";
 import { TERMS } from "./src/terms";
 import { colors, radii, shadow } from "./src/theme";
 import type { Comment, Direction, PredictionOutcome, TradePost, TradePostDraft, User as Trader } from "./src/types";
@@ -254,6 +264,19 @@ export default function App() {
     }
   }, [readSymbol]);
 
+  const applyDirectLinkTarget = useCallback((target: DirectLinkTarget | null) => {
+    if (!target) return;
+    if (target.screen === "read") {
+      setReadSymbol(target.symbol);
+      setScreen("read");
+      return;
+    }
+    setScreen("desk");
+    if (target.postId) {
+      setExpandedPostId(target.postId);
+    }
+  }, []);
+
   useEffect(() => {
     Promise.all([AsyncStorage.getItem(USER_ID_KEY), AsyncStorage.getItem(LEGACY_USER_ID_KEY)])
       .then(async ([storedUserId, legacyUserId]) => {
@@ -286,11 +309,76 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    let mounted = true;
+    const applyUrl = (url: string | null) => {
+      if (!mounted) return;
+      applyDirectLinkTarget(parseCoinFoxDirectLink(url));
+    };
+
+    applyUrl(currentWebUrl());
+    Linking.getInitialURL().then(applyUrl).catch(() => undefined);
+    const subscription = Linking.addEventListener("url", (event) => applyUrl(event.url));
+
+    return () => {
+      mounted = false;
+      subscription.remove();
+    };
+  }, [applyDirectLinkTarget]);
+
+  useEffect(() => {
     const timer = setTimeout(() => {
       void refreshBias();
     }, 250);
     return () => clearTimeout(timer);
   }, [refreshBias]);
+
+  useEffect(() => {
+    if (!expandedPostId || commentsByPost[expandedPostId]) return;
+    listComments(expandedPostId)
+      .then((comments) => setCommentsByPost((current) => ({ ...current, [expandedPostId]: comments })))
+      .catch((error) => {
+        setNotice(error instanceof Error ? error.message : "Could not load linked comments");
+      });
+  }, [commentsByPost, expandedPostId]);
+
+  const shareDirectLink = useCallback(async (label: string, url: string) => {
+    try {
+      if (Platform.OS === "web") {
+        const webNavigator = globalThis.navigator as {
+          clipboard?: { writeText: (value: string) => Promise<void> };
+          share?: (data: { title: string; text: string; url: string }) => Promise<void>;
+        } | undefined;
+        if (webNavigator?.share) {
+          await webNavigator.share({ title: label, text: label, url });
+          setNotice(`${label} link opened for sharing.`);
+          return;
+        }
+        if (webNavigator?.clipboard?.writeText) {
+          await webNavigator.clipboard.writeText(url);
+          setNotice(`${label} link copied.`);
+          return;
+        }
+      }
+
+      await Share.share({
+        title: label,
+        message: `${label}: ${url}`,
+        url
+      });
+      setNotice(`${label} link ready to share.`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not share link");
+    }
+  }, []);
+
+  const handleShareRead = useCallback(() => {
+    const symbol = readSymbol.trim().toUpperCase() || "BTCUSDT";
+    void shareDirectLink(`CoinFox ${symbol} read`, buildReadShareUrl(symbol));
+  }, [readSymbol, shareDirectLink]);
+
+  const handleSharePost = useCallback((post: TradePost) => {
+    void shareDirectLink(`CoinFox ${post.symbol.toUpperCase()} setup`, buildPostShareUrl(post.id));
+  }, [shareDirectLink]);
 
   useEffect(() => {
     if (!userId) return;
@@ -485,6 +573,7 @@ export default function App() {
             void refresh(userId);
             void refreshBias();
           }}
+          onShareRead={handleShareRead}
           onBiasFeedback={handleBiasFeedback}
         />
       );
@@ -530,6 +619,7 @@ export default function App() {
         setCommentDrafts={setCommentDrafts}
         onRefresh={() => refresh(userId)}
         onPredict={handlePrediction}
+        onSharePost={handleSharePost}
         onToggleComments={toggleComments}
         onComment={handleComment}
       />
@@ -622,6 +712,7 @@ function ReadScreen({
   refreshing,
   notice,
   onRefresh,
+  onShareRead,
   onBiasFeedback
 }: {
   symbol: string;
@@ -639,6 +730,7 @@ function ReadScreen({
   refreshing: boolean;
   notice: string | null;
   onRefresh: () => void;
+  onShareRead: () => void;
   onBiasFeedback: (action: string) => void;
 }) {
   const [showThesisHelp, setShowThesisHelp] = useState(false);
@@ -691,8 +783,13 @@ function ReadScreen({
             <Text style={styles.readLabel}>CoinFox bias</Text>
             <Text style={[styles.readAction, { color: read.accent }]}>{read.action}</Text>
           </View>
-          <View style={[styles.readBadge, { borderColor: read.accent }]}>
-            <Text style={[styles.readBadgeText, { color: read.accent }]}>{read.symbol}</Text>
+          <View style={styles.readHeaderActions}>
+            <Pressable style={styles.iconGhostButton} onPress={onShareRead} accessibilityLabel="Share read link">
+              <Share2 size={16} color={colors.text} />
+            </Pressable>
+            <View style={[styles.readBadge, { borderColor: read.accent }]}>
+              <Text style={[styles.readBadgeText, { color: read.accent }]}>{read.symbol}</Text>
+            </View>
           </View>
         </View>
         {biasLoading ? (
@@ -808,6 +905,7 @@ function DeskScreen({
   setCommentDrafts,
   onRefresh,
   onPredict,
+  onSharePost,
   onToggleComments,
   onComment
 }: {
@@ -823,6 +921,7 @@ function DeskScreen({
   setCommentDrafts: Dispatch<SetStateAction<Record<string, string>>>;
   onRefresh: () => void;
   onPredict: (postId: string, outcome: PredictionOutcome) => void;
+  onSharePost: (post: TradePost) => void;
   onToggleComments: (postId: string) => void;
   onComment: (postId: string) => void;
 }) {
@@ -858,6 +957,7 @@ function DeskScreen({
             commentDraft={commentDrafts[post.id] || ""}
             setCommentDraft={(value) => setCommentDrafts((current) => ({ ...current, [post.id]: value }))}
             onPredict={onPredict}
+            onSharePost={() => onSharePost(post)}
             onToggleComments={() => onToggleComments(post.id)}
             onComment={() => onComment(post.id)}
           />
@@ -1023,6 +1123,7 @@ function TradeCard({
   commentDraft,
   setCommentDraft,
   onPredict,
+  onSharePost,
   onToggleComments,
   onComment
 }: {
@@ -1032,6 +1133,7 @@ function TradeCard({
   commentDraft: string;
   setCommentDraft: (value: string) => void;
   onPredict: (postId: string, outcome: PredictionOutcome) => void;
+  onSharePost: () => void;
   onToggleComments: () => void;
   onComment: () => void;
 }) {
@@ -1105,11 +1207,17 @@ function TradeCard({
         </View>
       )}
 
-      <Pressable style={styles.commentToggle} onPress={onToggleComments}>
-        <MessageCircle size={16} color={colors.blue} />
-        <Text style={styles.commentToggleText}>Comments</Text>
-        <ChevronDown size={16} color={colors.dim} style={expanded ? styles.chevronOpen : undefined} />
-      </Pressable>
+      <View style={styles.postUtilityRow}>
+        <Pressable style={styles.commentToggle} onPress={onToggleComments}>
+          <MessageCircle size={16} color={colors.blue} />
+          <Text style={styles.commentToggleText}>Comments</Text>
+          <ChevronDown size={16} color={colors.dim} style={expanded ? styles.chevronOpen : undefined} />
+        </Pressable>
+        <Pressable style={styles.shareToggle} onPress={onSharePost} accessibilityLabel="Share setup link">
+          <Share2 size={16} color={colors.green} />
+          <Text style={styles.shareToggleText}>Share</Text>
+        </Pressable>
+      </View>
 
       {expanded ? (
         <View style={styles.commentsPane}>
@@ -1915,6 +2023,21 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 12
   },
+  readHeaderActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8
+  },
+  iconGhostButton: {
+    width: 34,
+    height: 34,
+    borderRadius: radii.sm,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    backgroundColor: colors.panelAlt,
+    alignItems: "center",
+    justifyContent: "center"
+  },
   readLabel: {
     color: colors.muted,
     fontSize: 12,
@@ -2393,8 +2516,15 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "900"
   },
+  postUtilityRow: {
+    minHeight: 36,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10
+  },
   commentToggle: {
     minHeight: 36,
+    flex: 1,
     flexDirection: "row",
     alignItems: "center",
     gap: 8
@@ -2404,6 +2534,24 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "800",
     flex: 1
+  },
+  shareToggle: {
+    minHeight: 36,
+    minWidth: 88,
+    borderRadius: radii.sm,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    backgroundColor: colors.panelAlt,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingHorizontal: 10
+  },
+  shareToggleText: {
+    color: colors.green,
+    fontSize: 13,
+    fontWeight: "900"
   },
   chevronOpen: {
     transform: [{ rotate: "180deg" }]

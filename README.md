@@ -78,7 +78,7 @@ pretends uncertainty does not exist. CoinFox takes the opposite path:
 | [src/coinfox/community/](src/coinfox/community/) | arena: play-money "NY Fox Exchange", FC currency, ideas, bets, feed |
 | [src/coinfox/feedback/](src/coinfox/feedback/) | anonymous feedback learning |
 | [src/coinfox/api.py](src/coinfox/api.py) | FastAPI HTTP surface |
-| [mobile/](mobile/) | Expo / React Native "Read" app |
+| [mobile/](mobile/) | Expo / React Native app with Read, Desk, Post, and Account tabs |
 | [docs/](docs/) | contracts, contributor guides, roadmaps |
 | [tests/](tests/) | test suite (run before every handoff) |
 
@@ -191,6 +191,19 @@ curl -X POST http://localhost:8000/feedback ^
 ```
 
 Full API notes live in [docs/api.md](docs/api.md).
+
+## Social Links
+
+The mobile app now supports shareable links for live reads and setup posts.
+Local examples:
+
+```text
+http://localhost:8081?screen=read&symbol=BTCUSDT
+http://localhost:8081?screen=desk&post=<post-id>
+```
+
+Future public links should use `https://coinfox.cloud`. The social feed and
+permalink direction lives in [docs/social_permalink_plan.md](docs/social_permalink_plan.md).
 
 ## Plain-English Output Contract
 
