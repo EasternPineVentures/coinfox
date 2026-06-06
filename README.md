@@ -275,6 +275,14 @@ from **Eastern Pine Ventures**.
 Risk tiers and capital-authority boundaries are documented in
 [docs/ecosystem_risk_tiers.md](docs/ecosystem_risk_tiers.md).
 
+## No Token, No Coin
+
+**CoinFox is not a cryptocurrency and has no coin, token, ICO, or presale.** The
+in-app "Gold" is play-money for entertainment only — it has no cash value and
+cannot be bought, sold, or withdrawn. CoinFox, FoxClaw, Planifier, and Eastern
+Pine are products and brands, not tokens. We are not affiliated with any token
+that uses these names; treat any such token as a scam.
+
 ## Not Financial Advice
 
 CoinFox is an experimental, educational market-read tool. It surfaces public
