@@ -102,6 +102,12 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   return payload as T;
 }
 
+export function suggestUsernames(count = 5): Promise<string[]> {
+  return request<{ suggestions: string[] }>(`/api/username/suggest?count=${count}`).then(
+    (payload) => payload.suggestions
+  );
+}
+
 export function createUser(username: string): Promise<User> {
   return request<User>("/api/users", {
     method: "POST",

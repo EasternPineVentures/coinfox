@@ -51,6 +51,7 @@ import {
   listPosts,
   predictOutcome,
   submitBiasFeedback,
+  suggestUsernames,
   type BiasDirection,
   type BiasRead,
   type FeedMessage
@@ -77,6 +78,14 @@ const INITIAL_DRAFT: FormDraft = {
   take_profit: "0",
   reasoning: ""
 };
+
+const DISCLAIMER_FOOTER = "Not investment advice · CoinFox has no crypto coin or token";
+const NO_TOKEN_DISCLAIMER =
+  "CoinFox is a market-reading and idea-sharing app. It is NOT a cryptocurrency and has no coin, " +
+  "token, ICO, or presale. In-app Gold is play-money for entertainment only — it has no cash value " +
+  "and cannot be bought, sold, or withdrawn. CoinFox is not affiliated with any token using the names " +
+  "CoinFox, FoxCoin, FoxClaw, or Eastern Pine. Treat any such token as a scam. Nothing here is " +
+  "investment advice.";
 
 type Screen = "read" | "desk" | "post" | "account";
 type WsStatus = "idle" | "connected" | "disconnected";
@@ -410,6 +419,18 @@ export default function App() {
     };
   }, [refresh, userId]);
 
+  const handleSuggestName = async () => {
+    try {
+      const suggestions = await suggestUsernames(1);
+      if (suggestions[0]) {
+        setUsername(suggestions[0]);
+        setNotice(null);
+      }
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not fetch a name");
+    }
+  };
+
   const handleCreateUser = async () => {
     const handle = username.trim();
     if (!handle) {
@@ -546,6 +567,7 @@ export default function App() {
           username={username}
           setUsername={setUsername}
           onCreate={handleCreateUser}
+          onSuggestName={handleSuggestName}
           submitting={submitting}
           notice={notice}
         />
@@ -644,6 +666,11 @@ export default function App() {
           </View>
         </View>
 
+        <View style={styles.disclaimerBar}>
+          <ShieldCheck size={13} color={colors.dim} />
+          <Text style={styles.disclaimerBarText}>{DISCLAIMER_FOOTER}</Text>
+        </View>
+
         <View style={styles.content}>{body()}</View>
 
         {userId && trader ? (
@@ -659,16 +686,39 @@ export default function App() {
   );
 }
 
+function GoldChip({ amount, compact = false }: { amount: number; compact?: boolean }) {
+  return (
+    <View style={[styles.goldChip, compact ? styles.goldChipCompact : null]}>
+      <CircleDollarSign size={compact ? 12 : 14} color={colors.amber} />
+      <Text style={styles.goldChipText}>{amount.toLocaleString()}</Text>
+    </View>
+  );
+}
+
+function DisclaimerCard() {
+  return (
+    <View style={styles.disclaimerCard}>
+      <View style={styles.disclaimerCardHeader}>
+        <ShieldCheck size={16} color={colors.amber} />
+        <Text style={styles.disclaimerCardTitle}>No coin. No token. Play-money only.</Text>
+      </View>
+      <Text style={styles.disclaimerCardText}>{NO_TOKEN_DISCLAIMER}</Text>
+    </View>
+  );
+}
+
 function AccountGate({
   username,
   setUsername,
   onCreate,
+  onSuggestName,
   submitting,
   notice
 }: {
   username: string;
   setUsername: (value: string) => void;
   onCreate: () => void;
+  onSuggestName: () => void;
   submitting: boolean;
   notice: string | null;
 }) {
@@ -678,20 +728,30 @@ function AccountGate({
         <ShieldCheck size={34} color={colors.green} />
       </View>
       <Text style={styles.gateTitle}>Trader check-in</Text>
-      <Field
-        label="Handle"
-        value={username}
-        onChangeText={setUsername}
-        placeholder="brooklynmacro"
-        autoCapitalize="none"
-        returnKeyType="done"
-        onSubmitEditing={onCreate}
-      />
+      <View style={styles.handleRow}>
+        <Field
+          label="Handle"
+          value={username}
+          onChangeText={setUsername}
+          placeholder="StopLossStan"
+          autoCapitalize="none"
+          returnKeyType="done"
+          onSubmitEditing={onCreate}
+          containerStyle={styles.handleField}
+        />
+        <Pressable style={styles.diceButton} onPress={onSuggestName} accessibilityLabel="Suggest a name">
+          <RefreshCcw size={18} color={colors.green} />
+        </Pressable>
+      </View>
+      <Text style={styles.anonNote}>
+        You're 100% anonymous. Pick a random market handle or make your own — share real details only if you choose to.
+      </Text>
       <Pressable style={styles.primaryButton} onPress={onCreate} disabled={submitting}>
         {submitting ? <ActivityIndicator color={colors.bg} /> : <Check size={18} color={colors.bg} />}
         <Text style={styles.primaryButtonText}>Enter exchange</Text>
       </Pressable>
       {notice ? <Notice message={notice} /> : null}
+      <DisclaimerCard />
     </View>
   );
 }
@@ -1112,6 +1172,8 @@ function AccountScreen({
           <Text style={styles.dangerButtonText}>Clear identity</Text>
         </Pressable>
       </View>
+
+      <DisclaimerCard />
     </ScrollView>
   );
 }
@@ -1153,8 +1215,8 @@ function TradeCard({
           </View>
         </View>
         <View style={styles.authorBlock}>
-          <Text style={styles.authorText}>{post.user.username}</Text>
-          <Text style={styles.authorMeta}>{post.user.gold} Gold</Text>
+          <Text style={styles.authorText} numberOfLines={1}>{post.user.username}</Text>
+          <GoldChip amount={post.user.gold} compact />
         </View>
       </View>
 
@@ -2406,6 +2468,27 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     marginTop: 3
   },
+  goldChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: radii.sm,
+    borderWidth: 1,
+    borderColor: colors.amber,
+    backgroundColor: colors.amberSoft
+  },
+  goldChipCompact: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    marginTop: 3
+  },
+  goldChipText: {
+    color: colors.amber,
+    fontSize: 12,
+    fontWeight: "800"
+  },
   levels: {
     borderTopWidth: 1,
     borderBottomWidth: 1,
@@ -2738,6 +2821,71 @@ const styles = StyleSheet.create({
     color: colors.amber,
     fontSize: 13,
     fontWeight: "800"
+  },
+  handleRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 10
+  },
+  handleField: {
+    flex: 1
+  },
+  diceButton: {
+    width: 48,
+    height: 48,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    backgroundColor: colors.panelAlt,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 2
+  },
+  anonNote: {
+    color: colors.dim,
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 10
+  },
+  disclaimerBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 18,
+    paddingVertical: 6,
+    backgroundColor: colors.panel,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border
+  },
+  disclaimerBarText: {
+    flex: 1,
+    color: colors.dim,
+    fontSize: 11,
+    fontWeight: "700"
+  },
+  disclaimerCard: {
+    marginTop: 14,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.amber,
+    backgroundColor: colors.amberSoft,
+    padding: 12,
+    gap: 6
+  },
+  disclaimerCardHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8
+  },
+  disclaimerCardTitle: {
+    color: colors.amber,
+    fontSize: 13,
+    fontWeight: "800"
+  },
+  disclaimerCardText: {
+    color: colors.muted,
+    fontSize: 12,
+    lineHeight: 17
   },
   emptyState: {
     minHeight: 160,
