@@ -27,6 +27,9 @@ except ImportError as exc:  # pragma: no cover - exercised only without extras a
 from . import __version__
 from .bias import get_bias
 from .community import namegen
+from .community.arena import Arena
+from .community.market_hours import market_now_text, market_session
+from .community.models import ArenaError
 from .community.social import SocialError, SocialStore
 from .data import DataError
 from .feedback import FeedbackEvent, record_feedback
@@ -83,6 +86,11 @@ app.add_middleware(
 
 
 _SOCIAL = SocialStore()
+_ARENA = Arena()
+# The NY Fox Exchange theme stays visible, but trading is 24/7 by default so the
+# app is usable outside NY stock hours. Set COINFOX_NYFE_ENFORCE_HOURS=1 to gate
+# trades to the 9:30-4:00 ET weekday session.
+_NYFE_ENFORCE_HOURS = os.environ.get("COINFOX_NYFE_ENFORCE_HOURS", "0") == "1"
 
 
 class _FeedManager:
@@ -249,6 +257,89 @@ def _require_user_header(x_user_id: Optional[str]) -> str:
     return x_user_id
 
 
+def _enrich_gold(user: dict) -> dict:
+    """Show the arena (paper-trading) balance as the user's Gold, so the number
+    next to a name reflects their NY Fox Exchange results — one Gold, one truth."""
+    try:
+        account = _ARENA.get_user(user["username"])
+        if account is not None:
+            user["gold"] = account.balance_fc
+    except Exception:  # pragma: no cover - never let display gold break a response
+        pass
+    return user
+
+
+def _enrich_post(post: dict) -> dict:
+    if isinstance(post.get("user"), dict):
+        _enrich_gold(post["user"])
+    return post
+
+
+def _enrich_comment(comment: dict) -> dict:
+    if isinstance(comment.get("user"), dict):
+        _enrich_gold(comment["user"])
+    return comment
+
+
+def _arena_handle(user_id: str) -> str:
+    """Map a social user id to the arena handle (their username)."""
+    try:
+        return _SOCIAL.get_user(user_id)["username"]
+    except SocialError as exc:
+        raise HTTPException(status_code=404, detail="user not found") from exc
+
+
+def _session_dict() -> dict:
+    session = market_session()
+    return {
+        "is_open": session.is_open,
+        "opens_at_ts": session.opens_at_ts,
+        "closes_at_ts": session.closes_at_ts,
+        "timezone": session.timezone,
+        "now_label": market_now_text(),
+        "enforced": _NYFE_ENFORCE_HOURS,
+    }
+
+
+def _position_dict(position) -> dict:
+    return {
+        "id": position.id,
+        "symbol": position.symbol,
+        "direction": position.direction,
+        "amount": position.amount_fc,
+        "entry_price": position.entry_price,
+        "exit_price": position.exit_price,
+        "status": position.status,
+        "realized_pnl": position.realized_pnl_fc,
+        "opened_ts": position.opened_ts,
+        "closed_ts": position.closed_ts,
+    }
+
+
+def _mark_dict(mark) -> dict:
+    payload = _position_dict(mark.position)
+    payload.update(
+        current_price=mark.current_price,
+        unrealized_pnl=mark.unrealized_pnl_fc,
+        gross_value=mark.gross_value_fc,
+    )
+    return payload
+
+
+def _stats_dict(stats) -> dict:
+    return {
+        "handle": stats.handle,
+        "balance": stats.balance_fc,
+        "open_positions": stats.open_positions,
+        "closed_positions": stats.closed_positions,
+        "winning_positions": stats.winning_positions,
+        "losing_positions": stats.losing_positions,
+        "realized_pnl": stats.realized_pnl_fc,
+        "unrealized_pnl": stats.unrealized_pnl_fc,
+        "total_staked": stats.total_staked_fc,
+    }
+
+
 @app.get("/api/username/suggest")
 async def suggest_usernames(count: int = Query(5, ge=1, le=20)) -> dict:
     return {"suggestions": namegen.suggest_batch(count)}
@@ -257,15 +348,21 @@ async def suggest_usernames(count: int = Query(5, ge=1, le=20)) -> dict:
 @app.post("/api/users")
 async def create_user(payload: CreateUserPayload) -> dict:
     try:
-        return _SOCIAL.create_user(payload.username)
+        user = _SOCIAL.create_user(payload.username)
     except SocialError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # Provision the NY Fox Exchange account (grants starting Gold).
+    try:
+        _ARENA.ensure_user(user["username"])
+    except Exception:  # pragma: no cover - never block signup on arena setup
+        pass
+    return _enrich_gold(user)
 
 
 @app.get("/api/users/{user_id}")
 async def get_user(user_id: str) -> dict:
     try:
-        return _SOCIAL.get_user(user_id)
+        return _enrich_gold(_SOCIAL.get_user(user_id))
     except SocialError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -275,7 +372,7 @@ async def list_posts(
     limit: int = Query(50, ge=1, le=200),
     x_user_id: Optional[str] = Header(default=None),
 ) -> list:
-    return _SOCIAL.list_posts(viewer_id=x_user_id, limit=limit)
+    return [_enrich_post(post) for post in _SOCIAL.list_posts(viewer_id=x_user_id, limit=limit)]
 
 
 @app.post("/api/posts")
@@ -289,7 +386,7 @@ async def create_post(
     except SocialError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await _FEED.broadcast({"type": "new_post", "post_id": post["id"], "user_id": user_id})
-    return post
+    return _enrich_post(post)
 
 
 @app.post("/api/posts/{post_id}/predict")
@@ -316,7 +413,7 @@ async def predict_post(
 
 @app.get("/api/posts/{post_id}/comments")
 async def list_comments(post_id: str) -> list:
-    return _SOCIAL.list_comments(post_id)
+    return [_enrich_comment(comment) for comment in _SOCIAL.list_comments(post_id)]
 
 
 @app.post("/api/posts/{post_id}/comments")
@@ -333,7 +430,83 @@ async def add_comment(
     await _FEED.broadcast(
         {"type": "new_comment", "post_id": post_id, "user_id": user_id}
     )
-    return comment
+    return _enrich_comment(comment)
+
+
+# ---------------------------------------------------------------------------
+# NY Fox Exchange — paper trading (play-money Gold, live prices)
+# ---------------------------------------------------------------------------
+class OpenPositionPayload(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=32)
+    direction: str = Field(..., min_length=1, max_length=8)
+    amount: int = Field(..., gt=0, le=1_000_000)
+
+
+@app.get("/api/exchange/session")
+async def exchange_session() -> dict:
+    return _session_dict()
+
+
+@app.get("/api/exchange/positions")
+async def exchange_positions(
+    status: Optional[str] = Query(default=None, pattern="^(open|closed)$"),
+    limit: int = Query(50, ge=1, le=200),
+    x_user_id: Optional[str] = Header(default=None),
+) -> dict:
+    handle = _arena_handle(_require_user_header(x_user_id))
+    marks = _ARENA.marked_positions(handle=handle, status=status, limit=limit)
+    return {
+        "session": _session_dict(),
+        "stats": _stats_dict(_ARENA.user_stats(handle)),
+        "positions": [_mark_dict(mark) for mark in marks],
+    }
+
+
+@app.post("/api/exchange/positions")
+async def exchange_open_position(
+    payload: OpenPositionPayload,
+    x_user_id: Optional[str] = Header(default=None),
+) -> dict:
+    handle = _arena_handle(_require_user_header(x_user_id))
+    try:
+        position = _ARENA.open_position(
+            handle,
+            payload.symbol,
+            payload.direction,
+            payload.amount,
+            enforce_market_hours=_NYFE_ENFORCE_HOURS,
+        )
+    except ArenaError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover - price feed / data issues
+        raise HTTPException(status_code=502, detail=f"could not price {payload.symbol}: {exc}") from exc
+    await _FEED.broadcast({"type": "position_open", "user_id": x_user_id})
+    return _position_dict(position)
+
+
+@app.post("/api/exchange/positions/{position_id}/close")
+async def exchange_close_position(
+    position_id: int,
+    x_user_id: Optional[str] = Header(default=None),
+) -> dict:
+    handle = _arena_handle(_require_user_header(x_user_id))
+    try:
+        position = _ARENA.close_position(
+            position_id,
+            handle,
+            enforce_market_hours=_NYFE_ENFORCE_HOURS,
+        )
+    except ArenaError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover - price feed / data issues
+        raise HTTPException(status_code=502, detail=f"could not close position: {exc}") from exc
+    await _FEED.broadcast({"type": "position_close", "user_id": x_user_id})
+    return _position_dict(position)
+
+
+@app.get("/api/exchange/leaderboard")
+async def exchange_leaderboard(limit: int = Query(10, ge=1, le=50)) -> dict:
+    return {"leaders": [_stats_dict(stat) for stat in _ARENA.stats_leaderboard(limit)]}
 
 
 @app.websocket("/ws/feed")

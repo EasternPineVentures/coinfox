@@ -1,5 +1,10 @@
 import type {
   Comment,
+  Direction,
+  ExchangeBoard,
+  ExchangePosition,
+  ExchangeSession,
+  ExchangeStats,
   FeedMessage,
   PredictionOutcome,
   TradePost,
@@ -164,6 +169,41 @@ export function submitBiasFeedback(payload: BiasFeedbackPayload): Promise<{ ok: 
     method: "POST",
     body: JSON.stringify(payload)
   });
+}
+
+export function getExchange(userId: string, status?: "open" | "closed"): Promise<ExchangeBoard> {
+  const query = status ? `?status=${status}` : "";
+  return request<ExchangeBoard>(`/api/exchange/positions${query}`, { userId });
+}
+
+export function openPosition(
+  userId: string,
+  symbol: string,
+  direction: Direction,
+  amount: number
+): Promise<ExchangePosition> {
+  return request<ExchangePosition>("/api/exchange/positions", {
+    method: "POST",
+    userId,
+    body: JSON.stringify({ symbol: symbol.trim().toUpperCase(), direction, amount })
+  });
+}
+
+export function closePosition(userId: string, positionId: number): Promise<ExchangePosition> {
+  return request<ExchangePosition>(`/api/exchange/positions/${positionId}/close`, {
+    method: "POST",
+    userId
+  });
+}
+
+export function getExchangeSession(): Promise<ExchangeSession> {
+  return request<ExchangeSession>("/api/exchange/session");
+}
+
+export function getLeaderboard(limit = 10): Promise<ExchangeStats[]> {
+  return request<{ leaders: ExchangeStats[] }>(`/api/exchange/leaderboard?limit=${limit}`).then(
+    (payload) => payload.leaders
+  );
 }
 
 export function feedWebSocketUrl(): string {

@@ -42,13 +42,17 @@ import {
 import {
   API_URL,
   addComment,
+  closePosition,
   createPost,
   createUser,
   feedWebSocketUrl,
   getBias,
+  getExchange,
+  getLeaderboard,
   getUser,
   listComments,
   listPosts,
+  openPosition,
   predictOutcome,
   submitBiasFeedback,
   suggestUsernames,
@@ -65,7 +69,17 @@ import {
 } from "./src/links";
 import { TERMS } from "./src/terms";
 import { colors, radii, shadow } from "./src/theme";
-import type { Comment, Direction, PredictionOutcome, TradePost, TradePostDraft, User as Trader } from "./src/types";
+import type {
+  Comment,
+  Direction,
+  ExchangeBoard,
+  ExchangePosition,
+  ExchangeStats,
+  PredictionOutcome,
+  TradePost,
+  TradePostDraft,
+  User as Trader
+} from "./src/types";
 
 const USER_ID_KEY = "coinfox.currentUserId";
 const LEGACY_USER_ID_KEY = "nyfx.currentUserId";
@@ -87,7 +101,12 @@ const NO_TOKEN_DISCLAIMER =
   "CoinFox, FoxCoin, FoxClaw, or Eastern Pine. Treat any such token as a scam. Nothing here is " +
   "investment advice.";
 
-type Screen = "read" | "desk" | "post" | "account";
+type Screen = "read" | "desk" | "post" | "exchange" | "account";
+type TradeForm = {
+  symbol: string;
+  direction: Direction;
+  amount: string;
+};
 type WsStatus = "idle" | "connected" | "disconnected";
 type IconElement = ReactElement<{ color?: string }>;
 type PositionSide = "flat" | Direction;
@@ -228,6 +247,10 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [wsStatus, setWsStatus] = useState<WsStatus>("idle");
   const websocketRef = useRef<WebSocket | null>(null);
+  const [exchangeBoard, setExchangeBoard] = useState<ExchangeBoard | null>(null);
+  const [leaderboard, setLeaderboard] = useState<ExchangeStats[]>([]);
+  const [exchangeBusy, setExchangeBusy] = useState(false);
+  const [tradeForm, setTradeForm] = useState<TradeForm>({ symbol: "BTCUSDT", direction: "long", amount: "50" });
 
   const currentStats = useMemo(() => {
     const open = posts.filter((post) => !post.resolved).length;
@@ -272,6 +295,52 @@ export default function App() {
       setBiasLoading(false);
     }
   }, [readSymbol]);
+
+  const loadExchange = useCallback(async (nextUserId = userId) => {
+    if (!nextUserId) return;
+    try {
+      const [board, leaders] = await Promise.all([getExchange(nextUserId), getLeaderboard(10)]);
+      setExchangeBoard(board);
+      setLeaderboard(leaders);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not load the exchange");
+    }
+  }, [userId]);
+
+  const handleOpenPosition = async () => {
+    if (!userId) {
+      setScreen("account");
+      return;
+    }
+    const amount = Math.floor(Number(tradeForm.amount));
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setNotice("Stake must be a positive number of Gold");
+      return;
+    }
+    setExchangeBusy(true);
+    try {
+      await openPosition(userId, tradeForm.symbol, tradeForm.direction, amount);
+      setNotice(null);
+      await Promise.all([loadExchange(userId), refresh(userId, true)]);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not open position");
+    } finally {
+      setExchangeBusy(false);
+    }
+  };
+
+  const handleClosePosition = async (positionId: number) => {
+    if (!userId) return;
+    setExchangeBusy(true);
+    try {
+      await closePosition(userId, positionId);
+      await Promise.all([loadExchange(userId), refresh(userId, true)]);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not close position");
+    } finally {
+      setExchangeBusy(false);
+    }
+  };
 
   const applyDirectLinkTarget = useCallback((target: DirectLinkTarget | null) => {
     if (!target) return;
@@ -340,6 +409,11 @@ export default function App() {
     }, 250);
     return () => clearTimeout(timer);
   }, [refreshBias]);
+
+  useEffect(() => {
+    if (screen !== "exchange" || !userId) return;
+    void loadExchange(userId);
+  }, [screen, userId, loadExchange]);
 
   useEffect(() => {
     if (!expandedPostId || commentsByPost[expandedPostId]) return;
@@ -613,6 +687,23 @@ export default function App() {
       );
     }
 
+    if (screen === "exchange") {
+      return (
+        <ExchangeScreen
+          board={exchangeBoard}
+          leaderboard={leaderboard}
+          tradeForm={tradeForm}
+          setTradeForm={setTradeForm}
+          busy={exchangeBusy}
+          notice={notice}
+          myHandle={trader.username}
+          onOpen={handleOpenPosition}
+          onClose={handleClosePosition}
+          onRefresh={() => loadExchange(userId)}
+        />
+      );
+    }
+
     if (screen === "account") {
       return (
         <AccountScreen
@@ -678,6 +769,7 @@ export default function App() {
             <TabButton active={screen === "read"} label="Read" icon={<BarChart3 size={19} />} onPress={() => setScreen("read")} />
             <TabButton active={screen === "desk"} label="Desk" icon={<Activity size={19} />} onPress={() => setScreen("desk")} />
             <TabButton active={screen === "post"} label="Post" icon={<Plus size={19} />} onPress={() => setScreen("post")} />
+            <TabButton active={screen === "exchange"} label="NYFE" icon={<CircleDollarSign size={19} />} onPress={() => setScreen("exchange")} />
             <TabButton active={screen === "account"} label="Account" icon={<User size={19} />} onPress={() => setScreen("account")} />
           </View>
         ) : null}
@@ -1102,6 +1194,204 @@ function PostScreen({
         {notice ? <Notice message={notice} /> : null}
       </View>
     </ScrollView>
+  );
+}
+
+function ExchangeScreen({
+  board,
+  leaderboard,
+  tradeForm,
+  setTradeForm,
+  busy,
+  notice,
+  myHandle,
+  onOpen,
+  onClose,
+  onRefresh
+}: {
+  board: ExchangeBoard | null;
+  leaderboard: ExchangeStats[];
+  tradeForm: TradeForm;
+  setTradeForm: Dispatch<SetStateAction<TradeForm>>;
+  busy: boolean;
+  notice: string | null;
+  myHandle: string;
+  onOpen: () => void;
+  onClose: (positionId: number) => void;
+  onRefresh: () => void;
+}) {
+  const session = board?.session;
+  const stats = board?.stats;
+  const open = (board?.positions || []).filter((position) => position.status === "open");
+
+  return (
+    <ScrollView
+      contentContainerStyle={styles.scrollContent}
+      refreshControl={<RefreshControl tintColor={colors.green} refreshing={false} onRefresh={onRefresh} />}
+    >
+      <View style={styles.nyfeBanner}>
+        <View style={styles.nyfeBannerTop}>
+          <Text style={styles.nyfeTitle}>New York Fox Exchange</Text>
+          <View style={[styles.nyfePill, session?.is_open ? styles.nyfeOpen : styles.nyfeClosed]}>
+            <Clock size={12} color={session?.is_open ? colors.green : colors.amber} />
+            <Text style={[styles.nyfePillText, { color: session?.is_open ? colors.green : colors.amber }]}>
+              {session?.is_open ? "SESSION OPEN" : "AFTER HOURS"}
+            </Text>
+          </View>
+        </View>
+        <Text style={styles.nyfeMeta}>
+          {session?.now_label || "—"}
+          {session && !session.enforced ? " · trading open 24/7" : ""}
+        </Text>
+      </View>
+
+      <View style={styles.balanceCard}>
+        <Text style={styles.balanceLabel}>Your Gold</Text>
+        <View style={styles.balanceRow}>
+          <CircleDollarSign size={22} color={colors.amber} />
+          <Text style={styles.balanceValue}>{(stats?.balance ?? 0).toLocaleString()}</Text>
+        </View>
+        <View style={styles.pnlRow}>
+          <PnlPill label="Realized" value={stats?.realized_pnl ?? 0} />
+          <PnlPill label="Open PnL" value={stats?.unrealized_pnl ?? 0} />
+          <View style={styles.pnlPill}>
+            <Text style={styles.pnlPillLabel}>Open</Text>
+            <Text style={styles.pnlPillNeutral}>{stats?.open_positions ?? 0}</Text>
+          </View>
+        </View>
+        <Text style={styles.goldNote}>Gold is play-money, earned only by trading. No cash value.</Text>
+      </View>
+
+      <View style={styles.sectionPanel}>
+        <View style={styles.sectionHeader}>
+          <Target size={20} color={colors.green} />
+          <Text style={styles.sectionTitle}>Open a position</Text>
+        </View>
+        <Field
+          label="Market"
+          value={tradeForm.symbol}
+          onChangeText={(value) => setTradeForm((current) => ({ ...current, symbol: value.toUpperCase() }))}
+          placeholder="BTCUSDT"
+          autoCapitalize="characters"
+        />
+        <Text style={styles.fieldLabel}>Direction</Text>
+        <View style={styles.segment}>
+          <SegmentButton
+            active={tradeForm.direction === "long"}
+            label="Long"
+            icon={<TrendingUp size={16} />}
+            onPress={() => setTradeForm((current) => ({ ...current, direction: "long" }))}
+          />
+          <SegmentButton
+            active={tradeForm.direction === "short"}
+            label="Short"
+            icon={<TrendingDown size={16} />}
+            onPress={() => setTradeForm((current) => ({ ...current, direction: "short" }))}
+          />
+        </View>
+        <Field
+          label="Stake (Gold)"
+          value={tradeForm.amount}
+          onChangeText={(value) => setTradeForm((current) => ({ ...current, amount: value }))}
+          keyboardType="number-pad"
+          placeholder="50"
+        />
+        <Pressable style={styles.primaryButton} onPress={onOpen} disabled={busy}>
+          {busy ? <ActivityIndicator color={colors.bg} /> : <CircleDollarSign size={18} color={colors.bg} />}
+          <Text style={styles.primaryButtonText}>Open position at live price</Text>
+        </Pressable>
+      </View>
+
+      {notice ? <Notice message={notice} /> : null}
+
+      <View style={styles.sectionPanel}>
+        <View style={styles.sectionHeader}>
+          <Activity size={20} color={colors.blue} />
+          <Text style={styles.sectionTitle}>Open positions</Text>
+        </View>
+        {open.length === 0 ? (
+          <Text style={styles.emptyCommentText}>No open positions. Open one above to start a hunt.</Text>
+        ) : (
+          open.map((position) => (
+            <PositionRow key={position.id} position={position} busy={busy} onClose={() => onClose(position.id)} />
+          ))
+        )}
+      </View>
+
+      <View style={styles.sectionPanel}>
+        <View style={styles.sectionHeader}>
+          <BarChart3 size={20} color={colors.amber} />
+          <Text style={styles.sectionTitle}>Leaderboard</Text>
+        </View>
+        {leaderboard.length === 0 ? (
+          <Text style={styles.emptyCommentText}>No traders ranked yet.</Text>
+        ) : (
+          leaderboard.map((stat, index) => (
+            <View
+              key={stat.handle}
+              style={[styles.leaderRow, stat.handle === myHandle.toLowerCase() ? styles.leaderRowMe : null]}
+            >
+              <Text style={styles.leaderRank}>{index + 1}</Text>
+              <Text style={styles.leaderHandle} numberOfLines={1}>{stat.handle}</Text>
+              <Text style={[styles.leaderPnl, { color: stat.realized_pnl >= 0 ? colors.green : colors.red }]}>
+                {formatSignedGold(stat.realized_pnl)}
+              </Text>
+              <GoldChip amount={stat.balance} compact />
+            </View>
+          ))
+        )}
+      </View>
+    </ScrollView>
+  );
+}
+
+function PnlPill({ label, value }: { label: string; value: number }) {
+  const positive = value >= 0;
+  return (
+    <View style={styles.pnlPill}>
+      <Text style={styles.pnlPillLabel}>{label}</Text>
+      <Text style={[styles.pnlPillValue, { color: positive ? colors.green : colors.red }]}>
+        {formatSignedGold(value)}
+      </Text>
+    </View>
+  );
+}
+
+function PositionRow({
+  position,
+  busy,
+  onClose
+}: {
+  position: ExchangePosition;
+  busy: boolean;
+  onClose: () => void;
+}) {
+  const isLong = position.direction === "long";
+  const pnl = position.unrealized_pnl ?? 0;
+  return (
+    <View style={styles.positionRow}>
+      <View style={styles.positionMain}>
+        <View style={styles.positionTitleRow}>
+          <Text style={styles.positionSymbol}>{position.symbol}</Text>
+          <View style={[styles.directionPill, { backgroundColor: isLong ? colors.greenSoft : colors.redSoft }]}>
+            {isLong ? <TrendingUp size={13} color={colors.green} /> : <TrendingDown size={13} color={colors.red} />}
+            <Text style={[styles.directionText, { color: isLong ? colors.green : colors.red }]}>
+              {position.direction.toUpperCase()}
+            </Text>
+          </View>
+        </View>
+        <Text style={styles.positionMeta}>
+          {position.amount} Gold · entry {formatPrice(position.entry_price)}
+          {position.current_price != null ? ` · now ${formatPrice(position.current_price)}` : ""}
+        </Text>
+        <Text style={[styles.positionPnl, { color: pnl >= 0 ? colors.green : colors.red }]}>
+          {formatSignedGold(pnl)} Gold
+        </Text>
+      </View>
+      <Pressable style={styles.closeButton} onPress={onClose} disabled={busy}>
+        <Text style={styles.closeButtonText}>Close</Text>
+      </Pressable>
+    </View>
   );
 }
 
@@ -1875,6 +2165,11 @@ function formatPrice(value: number): string {
   return value >= 1000 ? value.toLocaleString(undefined, { maximumFractionDigits: 0 }) : value.toFixed(2);
 }
 
+function formatSignedGold(value: number): string {
+  const rounded = Math.round(value);
+  return rounded > 0 ? `+${rounded.toLocaleString()}` : rounded.toLocaleString();
+}
+
 function parseOptionalNumber(value: string): number | null {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
@@ -2487,6 +2782,183 @@ const styles = StyleSheet.create({
   goldChipText: {
     color: colors.amber,
     fontSize: 12,
+    fontWeight: "800"
+  },
+  nyfeBanner: {
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    backgroundColor: colors.panelAlt,
+    padding: 14,
+    marginBottom: 12
+  },
+  nyfeBannerTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between"
+  },
+  nyfeTitle: {
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: "900",
+    flex: 1
+  },
+  nyfePill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: radii.sm,
+    borderWidth: 1
+  },
+  nyfeOpen: {
+    borderColor: colors.green,
+    backgroundColor: colors.greenSoft
+  },
+  nyfeClosed: {
+    borderColor: colors.amber,
+    backgroundColor: colors.amberSoft
+  },
+  nyfePillText: {
+    fontSize: 11,
+    fontWeight: "800"
+  },
+  nyfeMeta: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: "600",
+    marginTop: 6
+  },
+  balanceCard: {
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.panel,
+    padding: 16,
+    marginBottom: 12
+  },
+  balanceLabel: {
+    color: colors.muted,
+    fontSize: 13,
+    fontWeight: "700"
+  },
+  balanceRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 4
+  },
+  balanceValue: {
+    color: colors.amber,
+    fontSize: 30,
+    fontWeight: "900"
+  },
+  pnlRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 12
+  },
+  pnlPill: {
+    flex: 1,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.panelAlt,
+    paddingVertical: 8,
+    paddingHorizontal: 10
+  },
+  pnlPillLabel: {
+    color: colors.dim,
+    fontSize: 11,
+    fontWeight: "700"
+  },
+  pnlPillValue: {
+    fontSize: 16,
+    fontWeight: "800",
+    marginTop: 2
+  },
+  pnlPillNeutral: {
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: "800",
+    marginTop: 2
+  },
+  goldNote: {
+    color: colors.dim,
+    fontSize: 11,
+    marginTop: 10
+  },
+  positionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 10,
+    borderTopWidth: 1,
+    borderTopColor: colors.border
+  },
+  positionMain: {
+    flex: 1,
+    gap: 3
+  },
+  positionTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8
+  },
+  positionSymbol: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: "800"
+  },
+  positionMeta: {
+    color: colors.muted,
+    fontSize: 12
+  },
+  positionPnl: {
+    fontSize: 14,
+    fontWeight: "800"
+  },
+  closeButton: {
+    borderRadius: radii.sm,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    backgroundColor: colors.panelAlt,
+    paddingHorizontal: 14,
+    paddingVertical: 8
+  },
+  closeButtonText: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: "800"
+  },
+  leaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 8,
+    borderTopWidth: 1,
+    borderTopColor: colors.border
+  },
+  leaderRowMe: {
+    backgroundColor: colors.greenSoft,
+    borderRadius: radii.sm,
+    paddingHorizontal: 6
+  },
+  leaderRank: {
+    color: colors.dim,
+    fontSize: 13,
+    fontWeight: "800",
+    width: 20
+  },
+  leaderHandle: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: "700",
+    flex: 1
+  },
+  leaderPnl: {
+    fontSize: 13,
     fontWeight: "800"
   },
   levels: {

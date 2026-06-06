@@ -503,9 +503,11 @@ class Arena:
         amount_fc: int,
         now_ts: Optional[int] = None,
         price: Optional[float] = None,
+        enforce_market_hours: bool = True,
     ) -> Position:
         now = int(now_ts if now_ts is not None else time.time())
-        self._require_market_open(now)
+        if enforce_market_hours:
+            self._require_market_open(now)
         side = _normalize_trade_direction(direction)
         amount = int(amount_fc)
         if amount <= 0:
@@ -555,9 +557,11 @@ class Arena:
         handle: str,
         now_ts: Optional[int] = None,
         price: Optional[float] = None,
+        enforce_market_hours: bool = True,
     ) -> Position:
         now = int(now_ts if now_ts is not None else time.time())
-        self._require_market_open(now)
+        if enforce_market_hours:
+            self._require_market_open(now)
         user = self.ensure_user(handle)
         profile = self.get_profile(user.handle)
         position = self.get_position(position_id)
