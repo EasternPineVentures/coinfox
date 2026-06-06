@@ -251,6 +251,10 @@ class CommentPayload(BaseModel):
     content: str = Field(..., min_length=1, max_length=2000)
 
 
+class VotePayload(BaseModel):
+    direction: str = Field(..., min_length=1, max_length=8)  # boost | fade | clear
+
+
 def _require_user_header(x_user_id: Optional[str]) -> str:
     if not x_user_id:
         raise HTTPException(status_code=401, detail="x-user-id header is required")
@@ -408,6 +412,21 @@ async def predict_post(
             "outcome": payload.predicted_outcome,
         }
     )
+    return result
+
+
+@app.post("/api/posts/{post_id}/vote")
+async def vote_post(
+    post_id: str,
+    payload: VotePayload,
+    x_user_id: Optional[str] = Header(default=None),
+) -> dict:
+    user_id = _require_user_header(x_user_id)
+    try:
+        result = _SOCIAL.vote(user_id, post_id, payload.direction)
+    except SocialError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await _FEED.broadcast({"type": "new_vote", "post_id": post_id, "user_id": user_id})
     return result
 
 

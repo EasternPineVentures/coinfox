@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS users (
     total_predictions    INTEGER NOT NULL DEFAULT 0,
     correct_predictions  INTEGER NOT NULL DEFAULT 0,
     trust_level          INTEGER NOT NULL DEFAULT 1,
+    reputation           INTEGER NOT NULL DEFAULT 0,
     created_at           TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS posts (
@@ -88,7 +89,21 @@ CREATE TABLE IF NOT EXISTS comments (
     FOREIGN KEY(user_id) REFERENCES users(id)
 );
 CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id, created_ts ASC);
+CREATE TABLE IF NOT EXISTS votes (
+    id          TEXT PRIMARY KEY,
+    post_id     TEXT NOT NULL,
+    user_id     TEXT NOT NULL,
+    value       INTEGER NOT NULL,
+    created_at  TEXT NOT NULL,
+    UNIQUE(post_id, user_id),
+    FOREIGN KEY(post_id) REFERENCES posts(id),
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_votes_post ON votes(post_id);
 """
+
+# Boost = upvote (+1), Fade = downvote (-1). "clear" removes an existing vote.
+VOTE_VALUES = {"boost": 1, "fade": -1}
 
 
 def _iso(ts: Optional[float] = None) -> str:
@@ -117,6 +132,10 @@ class SocialStore:
     def _init_db(self) -> None:
         with closing(self._connect()) as conn, conn:
             conn.executescript(SCHEMA)
+            # Migrate older DBs that predate the reputation column.
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+            if "reputation" not in columns:
+                conn.execute("ALTER TABLE users ADD COLUMN reputation INTEGER NOT NULL DEFAULT 0")
 
     # ------------------------------------------------------------------ users
     def create_user(self, username: str) -> dict:
@@ -228,13 +247,65 @@ class SocialStore:
             )
         return {"message": "prediction recorded"}
 
+    def vote(self, user_id: str, post_id: str, direction: str) -> dict:
+        """Boost (+1), Fade (-1), or clear a vote on a post. The post author's
+        Reputation moves by the net change. Returns the post's new score and the
+        caller's current vote."""
+        self._require_user(user_id)
+        direction = str(direction).strip().lower()
+        if direction not in VOTE_VALUES and direction != "clear":
+            raise SocialError("direction must be 'boost', 'fade', or 'clear'")
+        new_value = VOTE_VALUES.get(direction, 0)
+        now = time.time()
+        with closing(self._connect()) as conn, conn:
+            post = conn.execute(
+                "SELECT author_id FROM posts WHERE id = ?", (post_id,)
+            ).fetchone()
+            if post is None:
+                raise SocialError("post not found")
+            author_id = post["author_id"]
+            prior = conn.execute(
+                "SELECT value FROM votes WHERE post_id = ? AND user_id = ?",
+                (post_id, user_id),
+            ).fetchone()
+            old_value = int(prior["value"]) if prior is not None else 0
+
+            if new_value == 0:
+                conn.execute(
+                    "DELETE FROM votes WHERE post_id = ? AND user_id = ?",
+                    (post_id, user_id),
+                )
+            elif prior is None:
+                conn.execute(
+                    "INSERT INTO votes(id, post_id, user_id, value, created_at) VALUES(?,?,?,?,?)",
+                    (_new_id(), post_id, user_id, new_value, _iso(now)),
+                )
+            else:
+                conn.execute(
+                    "UPDATE votes SET value = ?, created_at = ? WHERE post_id = ? AND user_id = ?",
+                    (new_value, _iso(now), post_id, user_id),
+                )
+
+            delta = new_value - old_value
+            if delta:
+                conn.execute(
+                    "UPDATE users SET reputation = reputation + ? WHERE id = ?",
+                    (delta, author_id),
+                )
+            score = conn.execute(
+                "SELECT COALESCE(SUM(value), 0) AS score FROM votes WHERE post_id = ?",
+                (post_id,),
+            ).fetchone()["score"]
+        viewer_vote = next((k for k, v in VOTE_VALUES.items() if v == new_value), None)
+        return {"post_id": post_id, "score": int(score), "viewer_vote": viewer_vote}
+
     # --------------------------------------------------------------- comments
     def list_comments(self, post_id: str, limit: int = 100) -> List[dict]:
         limit = max(1, min(int(limit), 500))
         with closing(self._connect()) as conn:
             rows = conn.execute(
                 "SELECT c.*, u.id AS u_id, u.username, u.gold, u.total_predictions, "
-                "u.correct_predictions, u.trust_level, u.created_at AS u_created_at "
+                "u.correct_predictions, u.trust_level, u.reputation, u.created_at AS u_created_at "
                 "FROM comments c JOIN users u ON u.id = c.user_id "
                 "WHERE c.post_id = ? ORDER BY c.created_ts ASC, c.rowid ASC LIMIT ?",
                 (post_id, limit),
@@ -261,7 +332,7 @@ class SocialStore:
             )
             row = conn.execute(
                 "SELECT c.*, u.id AS u_id, u.username, u.gold, u.total_predictions, "
-                "u.correct_predictions, u.trust_level, u.created_at AS u_created_at "
+                "u.correct_predictions, u.trust_level, u.reputation, u.created_at AS u_created_at "
                 "FROM comments c JOIN users u ON u.id = c.user_id WHERE c.id = ?",
                 (comment_id,),
             ).fetchone()
@@ -285,6 +356,7 @@ class SocialStore:
             (row["id"],),
         ).fetchone()["n"]
         user_prediction = None
+        viewer_vote = None
         if viewer_id:
             mine = conn.execute(
                 "SELECT outcome FROM predictions WHERE post_id = ? AND user_id = ?",
@@ -292,6 +364,16 @@ class SocialStore:
             ).fetchone()
             if mine is not None:
                 user_prediction = mine["outcome"]
+            my_vote = conn.execute(
+                "SELECT value FROM votes WHERE post_id = ? AND user_id = ?",
+                (row["id"], viewer_id),
+            ).fetchone()
+            if my_vote is not None:
+                viewer_vote = next((k for k, v in VOTE_VALUES.items() if v == int(my_vote["value"])), None)
+        score = conn.execute(
+            "SELECT COALESCE(SUM(value), 0) AS score FROM votes WHERE post_id = ?",
+            (row["id"],),
+        ).fetchone()["score"]
         return {
             "id": row["id"],
             "user": _user_dict(author),
@@ -311,6 +393,8 @@ class SocialStore:
             "confidence": row["confidence"],
             "prediction_stats": {"tp_predictions": tp, "sl_predictions": sl},
             "user_prediction": user_prediction,
+            "score": int(score),
+            "viewer_vote": viewer_vote,
         }
 
 
@@ -322,6 +406,7 @@ def _user_dict(row: sqlite3.Row) -> dict:
         "total_predictions": row["total_predictions"],
         "correct_predictions": row["correct_predictions"],
         "trust_level": row["trust_level"],
+        "reputation": row["reputation"],
         "created_at": row["created_at"],
     }
 
@@ -336,6 +421,7 @@ def _comment_dict(row: sqlite3.Row) -> dict:
             "total_predictions": row["total_predictions"],
             "correct_predictions": row["correct_predictions"],
             "trust_level": row["trust_level"],
+            "reputation": row["reputation"],
             "created_at": row["u_created_at"],
         },
         "content": row["content"],

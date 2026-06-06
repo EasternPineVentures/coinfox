@@ -9,7 +9,8 @@ import type {
   PredictionOutcome,
   TradePost,
   TradePostDraft,
-  User
+  User,
+  VoteDirection
 } from "../types";
 
 const configuredApiUrl = process.env.EXPO_PUBLIC_COINFOX_API_URL
@@ -145,6 +146,18 @@ export function predictOutcome(
     method: "POST",
     userId,
     body: JSON.stringify({ predicted_outcome: predictedOutcome })
+  });
+}
+
+export function votePost(
+  userId: string,
+  postId: string,
+  direction: VoteDirection
+): Promise<{ post_id: string; score: number; viewer_vote: "boost" | "fade" | null }> {
+  return request(`/api/posts/${encodeURIComponent(postId)}/vote`, {
+    method: "POST",
+    userId,
+    body: JSON.stringify({ direction })
   });
 }
 

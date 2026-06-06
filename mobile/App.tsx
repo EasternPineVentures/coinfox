@@ -56,6 +56,7 @@ import {
   predictOutcome,
   submitBiasFeedback,
   suggestUsernames,
+  votePost,
   type BiasDirection,
   type BiasRead,
   type FeedMessage
@@ -78,7 +79,8 @@ import type {
   PredictionOutcome,
   TradePost,
   TradePostDraft,
-  User as Trader
+  User as Trader,
+  VoteDirection
 } from "./src/types";
 
 const USER_ID_KEY = "coinfox.currentUserId";
@@ -527,6 +529,23 @@ export default function App() {
     }
   };
 
+  const handleVote = async (postId: string, direction: VoteDirection) => {
+    if (!userId) {
+      setScreen("account");
+      return;
+    }
+    try {
+      const result = await votePost(userId, postId, direction);
+      setPosts((current) =>
+        current.map((post) =>
+          post.id === postId ? { ...post, score: result.score, viewer_vote: result.viewer_vote } : post
+        )
+      );
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Vote failed");
+    }
+  };
+
   const handleSignOut = async () => {
     await AsyncStorage.removeItem(USER_ID_KEY);
     await AsyncStorage.removeItem(LEGACY_USER_ID_KEY);
@@ -735,6 +754,7 @@ export default function App() {
         onSharePost={handleSharePost}
         onToggleComments={toggleComments}
         onComment={handleComment}
+        onVote={handleVote}
       />
     );
   };
@@ -783,6 +803,15 @@ function GoldChip({ amount, compact = false }: { amount: number; compact?: boole
     <View style={[styles.goldChip, compact ? styles.goldChipCompact : null]}>
       <CircleDollarSign size={compact ? 12 : 14} color={colors.amber} />
       <Text style={styles.goldChipText}>{amount.toLocaleString()}</Text>
+    </View>
+  );
+}
+
+function CredChip({ amount }: { amount: number }) {
+  return (
+    <View style={styles.credChip}>
+      <ShieldCheck size={12} color={colors.blue} />
+      <Text style={styles.credChipText}>{amount.toLocaleString()} Cred</Text>
     </View>
   );
 }
@@ -1059,7 +1088,8 @@ function DeskScreen({
   onPredict,
   onSharePost,
   onToggleComments,
-  onComment
+  onComment,
+  onVote
 }: {
   trader: Trader;
   posts: TradePost[];
@@ -1076,6 +1106,7 @@ function DeskScreen({
   onSharePost: (post: TradePost) => void;
   onToggleComments: (postId: string) => void;
   onComment: (postId: string) => void;
+  onVote: (postId: string, direction: VoteDirection) => void;
 }) {
   return (
     <ScrollView
@@ -1112,6 +1143,7 @@ function DeskScreen({
             onSharePost={() => onSharePost(post)}
             onToggleComments={() => onToggleComments(post.id)}
             onComment={() => onComment(post.id)}
+            onVote={onVote}
           />
         ))
       )}
@@ -1477,7 +1509,8 @@ function TradeCard({
   onPredict,
   onSharePost,
   onToggleComments,
-  onComment
+  onComment,
+  onVote
 }: {
   post: TradePost;
   expanded: boolean;
@@ -1488,11 +1521,15 @@ function TradeCard({
   onSharePost: () => void;
   onToggleComments: () => void;
   onComment: () => void;
+  onVote: (postId: string, direction: VoteDirection) => void;
 }) {
   const isLong = post.direction === "long";
   const accent = isLong ? colors.green : colors.red;
   const predictionStats = post.prediction_stats || { tp_predictions: 0, sl_predictions: 0 };
   const settled = post.resolved && post.outcome;
+  const score = post.score ?? 0;
+  const boosted = post.viewer_vote === "boost";
+  const faded = post.viewer_vote === "fade";
 
   return (
     <View style={styles.postCard}>
@@ -1506,7 +1543,10 @@ function TradeCard({
         </View>
         <View style={styles.authorBlock}>
           <Text style={styles.authorText} numberOfLines={1}>{post.user.username}</Text>
-          <GoldChip amount={post.user.gold} compact />
+          <View style={styles.authorChips}>
+            <GoldChip amount={post.user.gold} compact />
+            <CredChip amount={post.user.reputation ?? 0} />
+          </View>
         </View>
       </View>
 
@@ -1523,6 +1563,26 @@ function TradeCard({
       </View>
 
       {post.reasoning ? <Text style={styles.reasoningText}>{post.reasoning}</Text> : null}
+
+      <View style={styles.voteBar}>
+        <Pressable
+          style={[styles.voteButton, boosted ? styles.voteBoostActive : null]}
+          onPress={() => onVote(post.id, boosted ? "clear" : "boost")}
+        >
+          <TrendingUp size={15} color={boosted ? colors.green : colors.dim} />
+          <Text style={[styles.voteButtonText, boosted ? { color: colors.green } : null]}>Boost</Text>
+        </Pressable>
+        <Text style={[styles.voteScore, { color: score > 0 ? colors.green : score < 0 ? colors.red : colors.muted }]}>
+          {score > 0 ? `+${score}` : score}
+        </Text>
+        <Pressable
+          style={[styles.voteButton, faded ? styles.voteFadeActive : null]}
+          onPress={() => onVote(post.id, faded ? "clear" : "fade")}
+        >
+          <TrendingDown size={15} color={faded ? colors.red : colors.dim} />
+          <Text style={[styles.voteButtonText, faded ? { color: colors.red } : null]}>Fade</Text>
+        </Pressable>
+      </View>
 
       <View style={styles.predictionBar}>
         <View style={styles.predictionSide}>
@@ -2783,6 +2843,64 @@ const styles = StyleSheet.create({
     color: colors.amber,
     fontSize: 12,
     fontWeight: "800"
+  },
+  authorChips: {
+    alignItems: "flex-end",
+    gap: 4,
+    marginTop: 3
+  },
+  credChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: radii.sm,
+    borderWidth: 1,
+    borderColor: colors.blue,
+    backgroundColor: colors.blueSoft
+  },
+  credChipText: {
+    color: colors.blue,
+    fontSize: 11,
+    fontWeight: "800"
+  },
+  voteBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 12,
+    marginTop: 12,
+    paddingVertical: 8,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.panelAlt
+  },
+  voteButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: radii.sm
+  },
+  voteBoostActive: {
+    backgroundColor: colors.greenSoft
+  },
+  voteFadeActive: {
+    backgroundColor: colors.redSoft
+  },
+  voteButtonText: {
+    color: colors.dim,
+    fontSize: 13,
+    fontWeight: "800"
+  },
+  voteScore: {
+    fontSize: 16,
+    fontWeight: "900",
+    minWidth: 40,
+    textAlign: "center"
   },
   nyfeBanner: {
     borderRadius: radii.lg,

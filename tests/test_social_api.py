@@ -86,6 +86,37 @@ class TestSocialStore(unittest.TestCase):
         listed = self.store.list_comments(post["id"])
         self.assertEqual([c["content"] for c in listed], ["nice level"])
 
+    def test_boost_and_fade_move_score_and_reputation(self):
+        author = self.store.create_user("author")
+        a = self.store.create_user("voter_a")
+        b = self.store.create_user("voter_b")
+        post = self.store.create_post(author["id"], VALID_DRAFT)
+
+        self.store.vote(a["id"], post["id"], "boost")
+        self.store.vote(b["id"], post["id"], "boost")
+        viewed = self.store.get_post(post["id"], viewer_id=a["id"])
+        self.assertEqual(viewed["score"], 2)
+        self.assertEqual(viewed["viewer_vote"], "boost")
+        self.assertEqual(self.store.get_user(author["id"])["reputation"], 2)
+
+        # B switches a boost to a fade: score 2 -> 0, reputation 2 -> 0.
+        self.store.vote(b["id"], post["id"], "fade")
+        self.assertEqual(self.store.get_post(post["id"])["score"], 0)
+        self.assertEqual(self.store.get_user(author["id"])["reputation"], 0)
+
+        # A clears their boost: score 0 -> -1.
+        self.store.vote(a["id"], post["id"], "clear")
+        viewed = self.store.get_post(post["id"], viewer_id=a["id"])
+        self.assertEqual(viewed["score"], -1)
+        self.assertIsNone(viewed["viewer_vote"])
+        self.assertEqual(self.store.get_user(author["id"])["reputation"], -1)
+
+    def test_vote_rejects_bad_direction(self):
+        author = self.store.create_user("seller")
+        post = self.store.create_post(author["id"], VALID_DRAFT)
+        with self.assertRaises(SocialError):
+            self.store.vote(author["id"], post["id"], "sideways")
+
     def test_list_posts_is_newest_first(self):
         user = self.store.create_user("seq")
         first = self.store.create_post(user["id"], {**VALID_DRAFT, "symbol": "SPY"})
@@ -137,6 +168,25 @@ class TestSocialApi(unittest.TestCase):
         self.assertEqual(commented.status_code, 200)
         comments = self.client.get(f"/api/posts/{post_id}/comments")
         self.assertEqual(comments.json()[0]["content"], "agreed")
+
+    def test_boost_endpoint_updates_score(self):
+        author = self.client.post("/api/users", json={"username": "writer"}).json()
+        voter = self.client.post("/api/users", json={"username": "fan"}).json()
+        post_id = self.client.post(
+            "/api/posts", json=VALID_DRAFT, headers={"x-user-id": author["id"]}
+        ).json()["id"]
+
+        boosted = self.client.post(
+            f"/api/posts/{post_id}/vote",
+            json={"direction": "boost"},
+            headers={"x-user-id": voter["id"]},
+        )
+        self.assertEqual(boosted.status_code, 200, boosted.text)
+        self.assertEqual(boosted.json()["score"], 1)
+        self.assertEqual(boosted.json()["viewer_vote"], "boost")
+
+        # Author's reputation (shown as Cred) rose.
+        self.assertEqual(self.client.get(f"/api/users/{author['id']}").json()["reputation"], 1)
 
     def test_mutations_require_user_header(self):
         missing = self.client.post("/api/posts", json=VALID_DRAFT)

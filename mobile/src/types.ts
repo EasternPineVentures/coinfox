@@ -1,6 +1,8 @@
 export type Direction = "long" | "short";
 export type PredictionOutcome = "tp_hit" | "sl_hit";
 
+export type VoteDirection = "boost" | "fade" | "clear";
+
 export type User = {
   id: string;
   username: string;
@@ -8,6 +10,7 @@ export type User = {
   total_predictions: number;
   correct_predictions: number;
   trust_level: number;
+  reputation: number;
   created_at: string;
 };
 
@@ -33,6 +36,8 @@ export type TradePost = {
     sl_predictions: number;
   } | null;
   user_prediction?: PredictionOutcome | null;
+  score?: number;
+  viewer_vote?: "boost" | "fade" | null;
 };
 
 export type TradePostDraft = {
