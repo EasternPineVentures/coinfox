@@ -18,7 +18,7 @@ from importlib import resources
 from typing import Optional
 
 try:
-    from fastapi import FastAPI, HTTPException, Query
+    from fastapi import FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
     from pydantic import BaseModel, Field
 except ImportError as exc:  # pragma: no cover - exercised only without extras at runtime
@@ -26,6 +26,8 @@ except ImportError as exc:  # pragma: no cover - exercised only without extras a
 
 from . import __version__
 from .bias import get_bias
+from .community import namegen
+from .community.social import SocialError, SocialStore
 from .data import DataError
 from .feedback import FeedbackEvent, record_feedback
 from .feedback.models import utc_now_iso
@@ -78,6 +80,36 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+_SOCIAL = SocialStore()
+
+
+class _FeedManager:
+    """Tracks live WebSocket clients and fans out feed events to them."""
+
+    def __init__(self) -> None:
+        self._connections: set[WebSocket] = set()
+
+    async def connect(self, websocket: WebSocket) -> None:
+        await websocket.accept()
+        self._connections.add(websocket)
+
+    def disconnect(self, websocket: WebSocket) -> None:
+        self._connections.discard(websocket)
+
+    async def broadcast(self, message: dict) -> None:
+        dead: list[WebSocket] = []
+        for connection in list(self._connections):
+            try:
+                await connection.send_json(message)
+            except Exception:  # pragma: no cover - drop clients that went away
+                dead.append(connection)
+        for connection in dead:
+            self._connections.discard(connection)
+
+
+_FEED = _FeedManager()
 
 
 class FeedbackPayload(BaseModel):
@@ -184,6 +216,136 @@ async def status(symbol: Optional[str] = None) -> dict:
         "primary_contract": "LONG_SHORT_NEUTRAL",
         "symbol": symbol,
     }
+
+
+class CreateUserPayload(BaseModel):
+    username: str = Field(..., min_length=1, max_length=40)
+
+
+class CreatePostPayload(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=32)
+    direction: str = Field(..., min_length=1, max_length=8)
+    entry_price: float = Field(..., gt=0)
+    stop_loss: float = Field(..., gt=0)
+    take_profit: float = Field(..., gt=0)
+    reasoning: Optional[str] = Field(default=None, max_length=4000)
+    chart_image_url: Optional[str] = Field(default=None, max_length=1000)
+    foxtrot_score: Optional[float] = None
+    regime: Optional[str] = Field(default=None, max_length=64)
+    confidence: Optional[float] = None
+
+
+class PredictPayload(BaseModel):
+    predicted_outcome: str = Field(..., min_length=1, max_length=16)
+
+
+class CommentPayload(BaseModel):
+    content: str = Field(..., min_length=1, max_length=2000)
+
+
+def _require_user_header(x_user_id: Optional[str]) -> str:
+    if not x_user_id:
+        raise HTTPException(status_code=401, detail="x-user-id header is required")
+    return x_user_id
+
+
+@app.get("/api/username/suggest")
+async def suggest_usernames(count: int = Query(5, ge=1, le=20)) -> dict:
+    return {"suggestions": namegen.suggest_batch(count)}
+
+
+@app.post("/api/users")
+async def create_user(payload: CreateUserPayload) -> dict:
+    try:
+        return _SOCIAL.create_user(payload.username)
+    except SocialError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/users/{user_id}")
+async def get_user(user_id: str) -> dict:
+    try:
+        return _SOCIAL.get_user(user_id)
+    except SocialError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/posts")
+async def list_posts(
+    limit: int = Query(50, ge=1, le=200),
+    x_user_id: Optional[str] = Header(default=None),
+) -> list:
+    return _SOCIAL.list_posts(viewer_id=x_user_id, limit=limit)
+
+
+@app.post("/api/posts")
+async def create_post(
+    payload: CreatePostPayload,
+    x_user_id: Optional[str] = Header(default=None),
+) -> dict:
+    user_id = _require_user_header(x_user_id)
+    try:
+        post = _SOCIAL.create_post(user_id, payload.model_dump())
+    except SocialError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await _FEED.broadcast({"type": "new_post", "post_id": post["id"], "user_id": user_id})
+    return post
+
+
+@app.post("/api/posts/{post_id}/predict")
+async def predict_post(
+    post_id: str,
+    payload: PredictPayload,
+    x_user_id: Optional[str] = Header(default=None),
+) -> dict:
+    user_id = _require_user_header(x_user_id)
+    try:
+        result = _SOCIAL.predict(user_id, post_id, payload.predicted_outcome)
+    except SocialError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await _FEED.broadcast(
+        {
+            "type": "new_prediction",
+            "post_id": post_id,
+            "user_id": user_id,
+            "outcome": payload.predicted_outcome,
+        }
+    )
+    return result
+
+
+@app.get("/api/posts/{post_id}/comments")
+async def list_comments(post_id: str) -> list:
+    return _SOCIAL.list_comments(post_id)
+
+
+@app.post("/api/posts/{post_id}/comments")
+async def add_comment(
+    post_id: str,
+    payload: CommentPayload,
+    x_user_id: Optional[str] = Header(default=None),
+) -> dict:
+    user_id = _require_user_header(x_user_id)
+    try:
+        comment = _SOCIAL.add_comment(user_id, post_id, payload.content)
+    except SocialError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await _FEED.broadcast(
+        {"type": "new_comment", "post_id": post_id, "user_id": user_id}
+    )
+    return comment
+
+
+@app.websocket("/ws/feed")
+async def feed_socket(websocket: WebSocket) -> None:
+    await _FEED.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        _FEED.disconnect(websocket)
+    except Exception:  # pragma: no cover - ensure cleanup on any socket error
+        _FEED.disconnect(websocket)
 
 
 def _validate_symbol(symbol: str) -> str:
