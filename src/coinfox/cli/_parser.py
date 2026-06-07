@@ -149,7 +149,7 @@ def _build_parser() -> argparse.ArgumentParser:
     whoami = arena_sub.add_parser("whoami", help="show or set your local arena handle")
     whoami.add_argument("--user", help="set your local arena handle")
 
-    balance = arena_sub.add_parser("balance", help="show your FC balance")
+    balance = arena_sub.add_parser("balance", help="show your Gold balance")
     balance.add_argument("--user", help="override the local arena handle")
 
     profile = arena_sub.add_parser("profile", help="show or update an arena profile")
@@ -173,7 +173,7 @@ def _build_parser() -> argparse.ArgumentParser:
     feed.add_argument("-n", type=int, default=20,
                       help="how many events to show (default 20)")
 
-    leaderboard = arena_sub.add_parser("leaderboard", help="top FC holders")
+    leaderboard = arena_sub.add_parser("leaderboard", help="top Gold holders")
     leaderboard.add_argument("-n", type=int, default=10,
                              help="how many users to show (default 10)")
 
@@ -201,7 +201,7 @@ def _build_parser() -> argparse.ArgumentParser:
     comment.add_argument("--user", help="override the local arena handle")
     comment.add_argument("--body", required=True)
 
-    bet = arena_sub.add_parser("bet", help="stake FC on an idea outcome")
+    bet = arena_sub.add_parser("bet", help="stake Gold on an idea outcome")
     bet.add_argument("idea_id", type=int)
     bet.add_argument("--user", help="override the local arena handle")
     bet.add_argument("--amount", type=int, required=True)
@@ -245,7 +245,7 @@ def _build_parser() -> argparse.ArgumentParser:
     resolve.add_argument("--outcome", required=True,
                          choices=["long", "short", "neutral"])
 
-    ledger = arena_sub.add_parser("ledger", help="show recent FC ledger events")
+    ledger = arena_sub.add_parser("ledger", help="show recent Gold ledger events")
     ledger.add_argument("--user", help="override the local arena handle")
     ledger.add_argument("-n", type=int, default=20,
                         help="how many entries to show (default 20)")

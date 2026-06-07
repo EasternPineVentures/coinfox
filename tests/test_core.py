@@ -295,45 +295,69 @@ class TestArena(unittest.TestCase):
         with self.assertRaises(ArenaError):
             self.arena.borrow_gold("borrowfox", 500)
 
-    def test_borrow_gold_full_flow(self):
-        """Zero out, borrow, check balance, block second borrow, repay."""
-        from coinfox.community.arena import LOAN_INTEREST_RATE, LOAN_MAX_GOLD
-        market_open_ts = nyfe_timestamp(2026, 6, 1, 10, 0)
+    def _zero_out(self, handle, ts):
+        """Helper: drive *handle* to a 0 Gold balance via a losing bet."""
         idea = self.arena.create_idea(
-            author_handle="loanfox",
-            title="test idea",
-            body="Testing loan flow.",
+            author_handle=handle,
+            title="zero out",
+            body="Drain balance for loan tests.",
             symbol="BTCUSDT",
             bias="long",
             resolution_rule="Closes green.",
         )
-        self.arena.place_bet(idea.id, "loanfox", "long", STARTING_BALANCE_FC, now_ts=market_open_ts)
-        self.arena.resolve_idea(idea.id, "short", "loanfox")
+        self.arena.place_bet(idea.id, handle, "long", STARTING_BALANCE_FC, now_ts=ts)
+        self.arena.resolve_idea(idea.id, "short", handle)
+
+    def test_borrow_gold_full_flow(self):
+        """Zero out, borrow (no interest at borrow time), block second borrow, manual repay."""
+        market_open_ts = nyfe_timestamp(2026, 6, 1, 10, 0)
+        self._zero_out("loanfox", market_open_ts)
         self.assertEqual(self.arena.balance("loanfox"), 0)
 
-        loan = self.arena.borrow_gold("loanfox", 400)
+        loan = self.arena.borrow_gold("loanfox", 400, now_ts=market_open_ts)
         self.assertEqual(loan.principal_fc, 400)
-        self.assertEqual(loan.interest_fc, int(round(400 * LOAN_INTEREST_RATE)))
+        self.assertEqual(loan.interest_fc, 0)  # interest accrues weekly, not at borrow
         self.assertEqual(loan.status, "open")
         self.assertEqual(self.arena.balance("loanfox"), 400)
 
-        # second borrow blocked
+        # second borrow blocked while a loan is open
         with self.assertRaises(ArenaError):
-            self.arena.borrow_gold("loanfox", 100)
+            self.arena.borrow_gold("loanfox", 100, now_ts=market_open_ts)
 
-        # repay
-        total_owed = loan.principal_fc + loan.interest_fc
-        # top up so user can repay
-        conn = self.arena._connect()
-        conn.execute(
-            "INSERT INTO wallet_ledger(handle, delta_fc, reason, created_ts) VALUES(?,?,?,?)",
-            ("loanfox", total_owed - 400, "test_topup", int(__import__("time").time())),
-        )
-        conn.commit()
-        conn.close()
-        repaid = self.arena.repay_gold("loanfox")
+        # manual full repay right away (no week elapsed -> no interest)
+        repaid = self.arena.repay_gold("loanfox", now_ts=market_open_ts)
         self.assertEqual(repaid.status, "repaid")
-        self.assertIsNone(self.arena.open_loan("loanfox"))
+        self.assertIsNone(self.arena.open_loan("loanfox", now_ts=market_open_ts))
+        self.assertEqual(self.arena.balance("loanfox"), 0)
+
+    def test_loan_weekly_interest_auto_repays_and_cannot_be_dodged(self):
+        """Interest accrues weekly and is auto-deducted — the user need not run repay."""
+        from coinfox.community.arena import LOAN_WEEK_SECONDS
+        t0 = nyfe_timestamp(2026, 6, 1, 10, 0)
+        self._zero_out("debtfox", t0)
+        self.arena.borrow_gold("debtfox", 1000, now_ts=t0)
+        self.assertEqual(self.arena.balance("debtfox"), 1000)
+
+        # One week later, settlement (triggered by reading the loan) adds 5%
+        # interest (50 g) on 1000 principal, then auto-repays 1050 from the 1000
+        # balance -> pays 1000 (interest 50 first, then 950 principal), leaving
+        # 50 principal still owed and the wallet at 0.
+        one_week = t0 + LOAN_WEEK_SECONDS + 1
+        loan = self.arena.open_loan("debtfox", now_ts=one_week)
+        self.assertIsNotNone(loan)
+        self.assertEqual(self.arena.balance("debtfox"), 0)
+        self.assertEqual(loan.total_owed_fc, 50)
+        self.assertEqual(loan.principal_fc, 50)
+        self.assertEqual(loan.interest_fc, 0)
+
+        # Another week with nothing to pay with: 5% of 50 = 2.5, which Python's
+        # banker's rounding takes to 2 g interest; debt carries forward and grows
+        # (so it can't be dodged).
+        two_weeks = t0 + 2 * LOAN_WEEK_SECONDS + 1
+        loan2 = self.arena.open_loan("debtfox", now_ts=two_weeks)
+        self.assertEqual(loan2.principal_fc, 50)
+        self.assertEqual(loan2.interest_fc, 2)
+        self.assertEqual(loan2.total_owed_fc, 52)
 
     def test_borrow_gold_capped_at_max(self):
         """Borrowing more than LOAN_MAX_GOLD is silently capped."""

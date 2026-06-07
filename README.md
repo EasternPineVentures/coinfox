@@ -75,7 +75,7 @@ pretends uncertainty does not exist. CoinFox takes the opposite path:
 | [src/coinfox/model.py](src/coinfox/model.py) and [bias.py](src/coinfox/bias.py) | transparent weighted signal model + LONG/SHORT/NEUTRAL read |
 | [src/coinfox/sources/](src/coinfox/sources/) | free public data feeds (prices, news, on-chain, macro, derivatives, and more) |
 | [src/coinfox/ai/](src/coinfox/ai/) | AI router (`FoxClaw`), provider registry, pulse loop, regime, replay |
-| [src/coinfox/community/](src/coinfox/community/) | arena: play-money "NY Fox Exchange", FC currency, ideas, bets, feed |
+| [src/coinfox/community/](src/coinfox/community/) | arena: play-money "NY Fox Exchange", Gold currency, ideas, bets, feed |
 | [src/coinfox/feedback/](src/coinfox/feedback/) | anonymous feedback learning |
 | [src/coinfox/api.py](src/coinfox/api.py) | FastAPI HTTP surface |
 | [mobile/](mobile/) | Expo / React Native app with Read, Desk, Post, and Account tabs |

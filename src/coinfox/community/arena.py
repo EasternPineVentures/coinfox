@@ -49,7 +49,8 @@ from .models import (
 # ---------------------------------------------------------------------------
 STARTING_BALANCE_FC = 500          # Gold grams every new user starts with
 LOAN_MAX_GOLD = 1000               # Maximum a user may borrow in one loan
-LOAN_INTEREST_RATE = 0.20          # 20 % interest charged on principal at repayment
+LOAN_INTEREST_RATE = 0.05          # simple interest per WEEK on outstanding principal
+LOAN_WEEK_SECONDS = 7 * 24 * 60 * 60  # one interest/repayment period
 BANKRUPTCY_RESCUE_FC = 100        # kept for backward-compat imports only
 BANKRUPTCY_RESCUE_COOLDOWN_S = 30 * 24 * 60 * 60  # legacy; not used by loan system
 VALID_DIRECTIONS = {"long", "short", "neutral"}
@@ -151,13 +152,14 @@ CREATE TABLE IF NOT EXISTS posts (
 CREATE INDEX IF NOT EXISTS idx_posts_author_created
     ON posts(author_handle, created_ts DESC);
 CREATE TABLE IF NOT EXISTS loans (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    handle         TEXT NOT NULL,
-    principal_fc   INTEGER NOT NULL,
-    interest_fc    INTEGER NOT NULL,
-    status         TEXT NOT NULL DEFAULT 'open',
-    borrowed_ts    INTEGER NOT NULL,
-    repaid_ts      INTEGER,
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    handle          TEXT NOT NULL,
+    principal_fc    INTEGER NOT NULL,
+    interest_fc     INTEGER NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'open',
+    borrowed_ts     INTEGER NOT NULL,
+    last_settled_ts INTEGER NOT NULL DEFAULT 0,
+    repaid_ts       INTEGER,
     FOREIGN KEY(handle) REFERENCES users(handle)
 );
 CREATE INDEX IF NOT EXISTS idx_loans_handle_status
@@ -200,10 +202,21 @@ class Arena:
     def _init_db(self) -> None:
         with closing(self._connect()) as conn, conn:
             conn.executescript(SCHEMA)
+            self._migrate(conn)
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        """Lightweight, idempotent migrations for DBs created before a column existed."""
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(loans)").fetchall()}
+        if "last_settled_ts" not in cols:
+            conn.execute("ALTER TABLE loans ADD COLUMN last_settled_ts INTEGER NOT NULL DEFAULT 0")
+            conn.execute("UPDATE loans SET last_settled_ts = borrowed_ts WHERE last_settled_ts = 0")
 
     def ensure_user(self, handle: str) -> UserAccount:
         normalized = _normalize_handle(handle)
         now = int(time.time())
+        # Catch up any weekly loan interest/auto-repayment before reporting balance,
+        # so a loan can never be dodged by simply not running `repay`.
+        self._settle_loans(normalized, now)
         with closing(self._connect()) as conn, conn:
             row = conn.execute(
                 "SELECT handle, created_ts FROM users WHERE handle = ?",
@@ -470,7 +483,7 @@ class Arena:
         user = self.ensure_user(handle)
         wager_direction = _normalize_direction(direction)
         if user.balance_fc < amount:
-            raise NotEnoughFoxcoin(f"{user.handle} only has {user.balance_fc} FC")
+            raise NotEnoughFoxcoin(f"{user.handle} only has {user.balance_fc} g")
 
         with closing(self._connect()) as conn, conn:
             self._record_ledger(
@@ -515,7 +528,7 @@ class Arena:
         user = self.ensure_user(handle)
         profile = self.get_profile(user.handle)
         if user.balance_fc < amount:
-            raise NotEnoughFoxcoin(f"{user.handle} only has {user.balance_fc} FC")
+            raise NotEnoughFoxcoin(f"{user.handle} only has {user.balance_fc} g")
         trade_symbol = symbol.strip().upper() or "BTCUSDT"
         entry_price = float(price if price is not None else self._price_for(trade_symbol))
         if entry_price <= 0:
@@ -544,7 +557,7 @@ class Arena:
                 user.handle,
                 "position_open",
                 f"{profile.display_name} opened a {side.upper()} position on {trade_symbol}",
-                f"Stake: {amount} FC at {entry_price:.2f}",
+                f"Stake: {amount} g at {entry_price:.2f}",
                 ref_kind="position",
                 ref_id=position_id,
                 created_ts=now,
@@ -603,7 +616,7 @@ class Arena:
                 user.handle,
                 "position_close",
                 f"{profile.display_name} closed a {position.direction.upper()} position on {position.symbol}",
-                f"PnL: {pnl_text} FC at {exit_price:.2f}",
+                f"PnL: {pnl_text} g at {exit_price:.2f}",
                 ref_kind="position",
                 ref_id=int(position_id),
                 created_ts=now,
@@ -802,15 +815,16 @@ class Arena:
     # Gold loan system  (replaces the old bankruptcy rescue)
     # ------------------------------------------------------------------
 
-    def borrow_gold(self, handle: str, amount: int = LOAN_MAX_GOLD) -> "Loan":
+    def borrow_gold(self, handle: str, amount: int = LOAN_MAX_GOLD, now_ts: Optional[int] = None) -> "Loan":
         """Borrow up to LOAN_MAX_GOLD when balance is exactly 0.
 
         Rules:
         - Balance must be 0 (you must be completely out).
         - No existing open loan for this handle.
         - Amount capped at LOAN_MAX_GOLD.
-        - Interest of LOAN_INTEREST_RATE is pre-calculated and stored;
-          total repayment = principal + interest.
+        - Interest accrues weekly at LOAN_INTEREST_RATE (simple, on the
+          outstanding principal) and is auto-repaid every week — see
+          ``_settle_loans``. It is NOT pre-charged at borrow time.
         """
         user = self.ensure_user(handle)
         if user.balance_fc != 0:
@@ -818,7 +832,7 @@ class Arena:
                 f"Loans are only available at exactly 0 Gold — you still have {user.balance_fc} g."
             )
         borrow_amount = max(1, min(int(amount), LOAN_MAX_GOLD))
-        now = int(time.time())
+        now = int(now_ts if now_ts is not None else time.time())
         with closing(self._connect()) as conn, conn:
             open_loan = conn.execute(
                 "SELECT id FROM loans WHERE handle = ? AND status = 'open' LIMIT 1",
@@ -828,13 +842,12 @@ class Arena:
                 raise ArenaError(
                     "You already have an open loan. Repay it first before borrowing again."
                 )
-            interest_fc = int(round(borrow_amount * LOAN_INTEREST_RATE))
             cur = conn.execute(
                 """
-                INSERT INTO loans(handle, principal_fc, interest_fc, status, borrowed_ts)
-                VALUES(?, ?, ?, 'open', ?)
+                INSERT INTO loans(handle, principal_fc, interest_fc, status, borrowed_ts, last_settled_ts)
+                VALUES(?, ?, 0, 'open', ?, ?)
                 """,
-                (user.handle, borrow_amount, interest_fc, now),
+                (user.handle, borrow_amount, now, now),
             )
             loan_id = int(cur.lastrowid)
             self._record_ledger(
@@ -848,12 +861,15 @@ class Arena:
             )
         return self._get_loan(loan_id)
 
-    def repay_gold(self, handle: str, amount: Optional[int] = None) -> "Loan":
-        """Repay the outstanding open loan (principal + interest).
+    def repay_gold(self, handle: str, amount: Optional[int] = None, now_ts: Optional[int] = None) -> "Loan":
+        """Manually repay the outstanding open loan (interest first, then principal).
 
-        If *amount* is None, repays the full outstanding amount.
-        Partial repayment is not supported — amount must equal the full debt.
+        If *amount* is None, repays the full outstanding debt. A partial *amount*
+        pays down interest first, then principal, and leaves the loan open.
+        Weekly interest/auto-repayment still happens automatically on top of this.
         """
+        now = int(now_ts if now_ts is not None else time.time())
+        self._settle_loans(handle, now)
         user = self.ensure_user(handle)
         with closing(self._connect()) as conn, conn:
             row = conn.execute(
@@ -863,34 +879,28 @@ class Arena:
             if row is None:
                 raise ArenaError("You have no open loan to repay.")
             loan_id = int(row["id"])
-            total_owed = int(row["principal_fc"]) + int(row["interest_fc"])
-            if amount is not None and int(amount) != total_owed:
+            principal = int(row["principal_fc"])
+            interest = int(row["interest_fc"])
+            total_owed = principal + interest
+            pay = total_owed if amount is None else int(amount)
+            if pay <= 0:
+                raise ArenaError("Repayment amount must be positive.")
+            if pay > total_owed:
                 raise ArenaError(
-                    f"Repayment must be the full debt: {total_owed} g "
-                    f"({row['principal_fc']} principal + {row['interest_fc']} interest)."
+                    f"You only owe {total_owed} g ({principal} principal + {interest} interest)."
                 )
-            if user.balance_fc < total_owed:
+            balance = self._balance_conn(conn, user.handle)
+            if balance < pay:
                 raise ArenaError(
-                    f"Not enough Gold to repay — you owe {total_owed} g but only have {user.balance_fc} g."
+                    f"Not enough Gold to repay — you tried {pay} g but only have {balance} g."
                 )
-            now = int(time.time())
-            self._record_ledger(
-                conn,
-                user.handle,
-                -total_owed,
-                "loan_repayment",
-                ref_kind="loan",
-                ref_id=loan_id,
-                created_ts=now,
-            )
-            conn.execute(
-                "UPDATE loans SET status = 'repaid', repaid_ts = ? WHERE id = ?",
-                (now, loan_id),
-            )
+            self._apply_loan_payment(conn, loan_id, user.handle, principal, interest, pay, now)
         return self._get_loan(loan_id)
 
-    def open_loan(self, handle: str) -> Optional["Loan"]:
-        """Return the user's current open loan, or None if they have none."""
+    def open_loan(self, handle: str, now_ts: Optional[int] = None) -> Optional["Loan"]:
+        """Return the user's current open loan (after catching up weekly settlement)."""
+        now = int(now_ts if now_ts is not None else time.time())
+        self._settle_loans(handle, now)
         normalized = _normalize_handle(handle)
         with closing(self._connect()) as conn:
             row = conn.execute(
@@ -898,6 +908,100 @@ class Arena:
                 (normalized,),
             ).fetchone()
         return _loan_from_row(row) if row is not None else None
+
+    def _settle_loans(self, handle: str, now_ts: Optional[int] = None) -> None:
+        """Lazily catch up weekly interest + auto-repayment for the user's open loan.
+
+        No scheduler exists, so this is called by account-touching operations.
+        For every full week elapsed since the last settlement it:
+          1. adds simple interest (LOAN_INTEREST_RATE x remaining principal), then
+          2. auto-deducts as much of the debt as the balance allows (interest
+             first, then principal). Whatever cannot be covered carries forward and
+             keeps accruing — so a loan can never simply be ignored.
+        """
+        normalized = _normalize_handle(handle)
+        now = int(now_ts if now_ts is not None else time.time())
+        with closing(self._connect()) as conn, conn:
+            row = conn.execute(
+                "SELECT * FROM loans WHERE handle = ? AND status = 'open' ORDER BY borrowed_ts ASC LIMIT 1",
+                (normalized,),
+            ).fetchone()
+            if row is None:
+                return
+            loan_id = int(row["id"])
+            principal = int(row["principal_fc"])
+            interest = int(row["interest_fc"])
+            last_settled = int(row["last_settled_ts"]) or int(row["borrowed_ts"])
+
+            while now - last_settled >= LOAN_WEEK_SECONDS and (principal + interest) > 0:
+                last_settled += LOAN_WEEK_SECONDS
+                interest += int(round(principal * LOAN_INTEREST_RATE))
+                balance = max(0, self._balance_conn(conn, normalized))
+                pay = min(balance, principal + interest)
+                if pay > 0:
+                    principal, interest = self._apply_loan_payment(
+                        conn, loan_id, normalized, principal, interest, pay, last_settled,
+                        update_meta=False,
+                    )
+                if principal + interest == 0:
+                    break
+
+            conn.execute(
+                "UPDATE loans SET principal_fc = ?, interest_fc = ?, last_settled_ts = ?, "
+                "status = ?, repaid_ts = ? WHERE id = ?",
+                (
+                    principal,
+                    interest,
+                    last_settled,
+                    "repaid" if principal + interest == 0 else "open",
+                    now if principal + interest == 0 else None,
+                    loan_id,
+                ),
+            )
+
+    def _apply_loan_payment(
+        self,
+        conn: sqlite3.Connection,
+        loan_id: int,
+        handle: str,
+        principal: int,
+        interest: int,
+        pay: int,
+        now: int,
+        update_meta: bool = True,
+    ) -> tuple[int, int]:
+        """Deduct *pay* Gold from the wallet and apply it to interest then principal.
+
+        Returns the remaining (principal, interest). When *update_meta* is True the
+        loan row's balances/status are written here (manual-repay path); the weekly
+        settler passes False and writes the row itself after the accrual loop.
+        """
+        self._record_ledger(
+            conn, handle, -pay, "loan_repayment",
+            ref_kind="loan", ref_id=loan_id, created_ts=now,
+        )
+        interest_payment = min(interest, pay)
+        interest -= interest_payment
+        principal -= (pay - interest_payment)
+        if update_meta:
+            conn.execute(
+                "UPDATE loans SET principal_fc = ?, interest_fc = ?, status = ?, repaid_ts = ? WHERE id = ?",
+                (
+                    principal,
+                    interest,
+                    "repaid" if principal + interest == 0 else "open",
+                    now if principal + interest == 0 else None,
+                    loan_id,
+                ),
+            )
+        return principal, interest
+
+    def _balance_conn(self, conn: sqlite3.Connection, handle: str) -> int:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(delta_fc), 0) AS balance_fc FROM wallet_ledger WHERE handle = ?",
+            (handle,),
+        ).fetchone()
+        return int(row["balance_fc"] if row is not None else 0)
 
     def _get_loan(self, loan_id: int) -> "Loan":
         with closing(self._connect()) as conn:
@@ -966,7 +1070,7 @@ class Arena:
         balance_fc = int(current_balance["balance_fc"] if current_balance is not None else 0)
         next_balance = balance_fc + int(delta_fc)
         if next_balance < 0:
-            raise NotEnoughFoxcoin(f"{handle} would go negative ({next_balance} FC)")
+            raise NotEnoughFoxcoin(f"{handle} would go negative ({next_balance} g)")
         conn.execute(
             """
             INSERT INTO wallet_ledger(handle, delta_fc, reason, ref_kind, ref_id, created_ts)
@@ -1136,6 +1240,7 @@ def _position_from_row(row: sqlite3.Row) -> Position:
 
 
 def _loan_from_row(row: sqlite3.Row) -> "Loan":
+    last_settled = int(row["last_settled_ts"]) or int(row["borrowed_ts"])
     return Loan(
         id=int(row["id"]),
         handle=str(row["handle"]),
@@ -1143,6 +1248,7 @@ def _loan_from_row(row: sqlite3.Row) -> "Loan":
         interest_fc=int(row["interest_fc"]),
         status=str(row["status"]),
         borrowed_ts=int(row["borrowed_ts"]),
+        last_settled_ts=last_settled,
         repaid_ts=int(row["repaid_ts"]) if row["repaid_ts"] is not None else None,
     )
 

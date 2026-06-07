@@ -30,11 +30,16 @@ NotEnoughFoxcoin = NotEnoughGold
 class Loan:
     id: int
     handle: str
-    principal_fc: int
-    interest_fc: int
-    status: str          # 'open' | 'repaid'
+    principal_fc: int          # remaining principal still owed
+    interest_fc: int           # accrued interest still owed
+    status: str                # 'open' | 'repaid'
     borrowed_ts: int
+    last_settled_ts: int       # last weekly accrual/auto-repay boundary
     repaid_ts: Optional[int]
+
+    @property
+    def total_owed_fc(self) -> int:
+        return self.principal_fc + self.interest_fc
 
 
 @dataclass(frozen=True)

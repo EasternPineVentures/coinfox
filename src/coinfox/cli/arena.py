@@ -57,7 +57,7 @@ def _render_arena_balance(args, console: Console) -> int:
     t.add_row("user", user.handle)
     t.add_row("balance", f"{user.balance_fc} Gold (g)")
     t.add_row("starting grant", "500 Gold once")
-    t.add_row("loans", "up to 1000 Gold at 20% interest when balance = 0")
+    t.add_row("loans", "up to 1000 Gold when balance = 0; 5%/week interest, auto-repaid weekly")
     t.add_row("NYFE sizing", "no leverage, no platform cap, max loss is your stake")
     console.print(Panel(t, title="Gold balance", border_style="green"))
     return 0
@@ -84,9 +84,9 @@ def _render_arena_profile(args, console: Console) -> int:
     t.add_row("handle", profile.handle)
     t.add_row("display name", profile.display_name)
     t.add_row("bio", profile.bio or "-")
-    t.add_row("balance", f"{stats.balance_fc} FC")
-    t.add_row("realized pnl", f"{stats.realized_pnl_fc:+d} FC")
-    t.add_row("unrealized pnl", f"{stats.unrealized_pnl_fc:+d} FC")
+    t.add_row("balance", f"{stats.balance_fc} g")
+    t.add_row("realized pnl", f"{stats.realized_pnl_fc:+d} g")
+    t.add_row("unrealized pnl", f"{stats.unrealized_pnl_fc:+d} g")
     t.add_row("posts", str(len(arena.list_posts(handle=handle, limit=100))))
     console.print(Panel(t, title="arena profile", border_style="cyan"))
     return 0
@@ -201,7 +201,7 @@ def _render_arena_leaderboard(n: int, console: Console) -> int:
     t.add_column("balance", justify="right")
     t.add_column("joined", style="dim")
     for index, user in enumerate(users, start=1):
-        t.add_row(str(index), user.handle, f"{user.balance_fc} FC",
+        t.add_row(str(index), user.handle, f"{user.balance_fc} g",
                   _age_text(user.created_ts))
     console.print(t)
     return 0
@@ -234,7 +234,7 @@ def _render_arena_ideas(show_all: bool, n: int, console: Console) -> int:
             Text(idea.bias.upper(), style=_bias_color(idea.bias)),
             idea.title,
             idea.author_handle,
-            f"{pool} FC",
+            f"{pool} g",
             idea.status,
         )
     console.print(t)
@@ -284,7 +284,7 @@ def _render_arena_show(idea_id: int, console: Console) -> int:
     pool_table.add_column("side", style="dim")
     pool_table.add_column("staked", justify="right")
     for side in ("long", "short", "neutral"):
-        pool_table.add_row(side, f"{pools.get(side, 0)} FC")
+        pool_table.add_row(side, f"{pools.get(side, 0)} g")
     console.print(pool_table)
 
     comments = arena.comments(idea.id, limit=50)
@@ -347,9 +347,9 @@ def _render_arena_bet(args, console: Console) -> int:
     bet = arena.place_bet(args.idea_id, handle, args.direction, args.amount)
     balance = arena.balance(handle)
     console.print(
-        f"[bold green]bet placed:[/] {bet.amount_fc} FC on "
+        f"[bold green]bet placed:[/] {bet.amount_fc} g on "
         f"[bold]{bet.direction.upper()}[/] for idea {bet.idea_id}. "
-        f"Balance: [cyan]{balance} FC[/]."
+        f"Balance: [cyan]{balance} g[/]."
     )
     return _render_arena_show(args.idea_id, console)
 
@@ -368,9 +368,9 @@ def _render_arena_trade(args, console: Console) -> int:
     t.add_row("symbol", position.symbol)
     t.add_row("direction",
               Text(position.direction.upper(), style=_bias_color(position.direction)))
-    t.add_row("stake", f"{position.amount_fc} FC")
+    t.add_row("stake", f"{position.amount_fc} g")
     t.add_row("entry", f"{position.entry_price:.2f}")
-    t.add_row("balance left", f"{balance} FC")
+    t.add_row("balance left", f"{balance} g")
     console.print(Panel(t, title="NYFE position opened",
                         border_style=_bias_color(position.direction)))
     console.print(
@@ -418,7 +418,7 @@ def _render_arena_positions(args, console: Console) -> int:
             str(position.id),
             position.symbol,
             Text(position.direction.upper(), style=_bias_color(position.direction)),
-            f"{position.amount_fc} FC",
+            f"{position.amount_fc} g",
             f"{position.entry_price:.2f}",
             marked_price,
             Text(pnl_text, style=pnl_style),
@@ -456,7 +456,7 @@ def _render_arena_stats(args, console: Console) -> int:
             t.add_row(
                 str(index), stat.handle, realized, unrealized,
                 str(stat.winning_positions), str(stat.losing_positions),
-                f"{stat.balance_fc} FC",
+                f"{stat.balance_fc} g",
             )
         console.print(t)
         return 0
@@ -467,14 +467,14 @@ def _render_arena_stats(args, console: Console) -> int:
     t.add_column(style="dim")
     t.add_column()
     t.add_row("user", stat.handle)
-    t.add_row("balance", f"{stat.balance_fc} FC")
+    t.add_row("balance", f"{stat.balance_fc} g")
     t.add_row("open positions", str(stat.open_positions))
     t.add_row("closed positions", str(stat.closed_positions))
     t.add_row("wins", str(stat.winning_positions))
     t.add_row("losses", str(stat.losing_positions))
-    t.add_row("realized pnl", f"{stat.realized_pnl_fc:+d} FC")
-    t.add_row("unrealized pnl", f"{stat.unrealized_pnl_fc:+d} FC")
-    t.add_row("total staked", f"{stat.total_staked_fc} FC")
+    t.add_row("realized pnl", f"{stat.realized_pnl_fc:+d} g")
+    t.add_row("unrealized pnl", f"{stat.unrealized_pnl_fc:+d} g")
+    t.add_row("total staked", f"{stat.total_staked_fc} g")
     console.print(Panel(t, title="arena stats", border_style="magenta"))
     return 0
 
@@ -496,8 +496,8 @@ def _render_arena_exit(args, console: Console) -> int:
     t.add_row("symbol", position.symbol)
     t.add_row("exit",
               f"{position.exit_price:.2f}" if position.exit_price is not None else "n/a")
-    t.add_row("pnl", Text(pnl_text + " FC", style=pnl_style))
-    t.add_row("balance", f"{balance} FC")
+    t.add_row("pnl", Text(pnl_text + " g", style=pnl_style))
+    t.add_row("balance", f"{balance} g")
     console.print(Panel(t, title="NYFE position closed", border_style=pnl_style))
     return 0
 
@@ -522,9 +522,9 @@ def _render_arena_ledger(args, console: Console) -> int:
     handle = _resolve_arena_user(arena, getattr(args, "user", None))
     rows = arena.ledger(handle, limit=max(1, int(getattr(args, "n", 20))))
     if not rows:
-        console.print("[dim]No FC ledger entries yet.[/]")
+        console.print("[dim]No Gold ledger entries yet.[/]")
         return 0
-    t = Table(title=f"{handle} FC ledger", expand=True)
+    t = Table(title=f"{handle} Gold ledger", expand=True)
     t.add_column("when", style="dim")
     t.add_column("delta", justify="right")
     t.add_column("reason")
@@ -549,18 +549,18 @@ def _render_arena_borrow(args, console: Console) -> int:
     handle = _resolve_arena_user(arena, getattr(args, "user", None))
     amount = getattr(args, "amount", 1000)
     loan = arena.borrow_gold(handle, amount)
-    total_owed = loan.principal_fc + loan.interest_fc
     t = Table.grid(padding=(0, 2))
     t.add_column(style="dim")
     t.add_column()
     t.add_row("handle", handle)
     t.add_row("borrowed", f"{loan.principal_fc} Gold (g)")
-    t.add_row("interest (20%)", f"{loan.interest_fc} g")
-    t.add_row("total owed", f"{total_owed} g")
-    t.add_row("repay with", "coinfox arena repay")
+    t.add_row("interest", "5% per week on the outstanding principal")
+    t.add_row("auto-repay", "weekly \u2014 deducted from your balance automatically")
+    t.add_row("repay early", "coinfox arena repay")
     console.print(Panel(t, title="[bold yellow]Gold loan \u2014 NY Fox Exchange[/]",
                         border_style="yellow"))
-    console.print("[yellow]Remember: this is make-believe Gold. Repay when you can![/]")
+    console.print("[yellow]Make-believe Gold. Interest builds every week and is auto-repaid \u2014 "
+                  "you can't dodge it, so pay it down when you can![/]")
     return 0
 
 
@@ -574,9 +574,13 @@ def _render_arena_repay(args, console: Console) -> int:
     t.add_column(style="dim")
     t.add_column()
     t.add_row("handle", handle)
-    t.add_row("repaid", f"{loan.principal_fc + loan.interest_fc} Gold (g)")
-    t.add_row("loan status", "repaid")
-    console.print(Panel(t, title="[bold green]Loan repaid[/]", border_style="green"))
+    if loan.status == "repaid":
+        t.add_row("loan status", "repaid in full")
+    else:
+        t.add_row("still owed", f"{loan.total_owed_fc} g "
+                                f"({loan.principal_fc} principal + {loan.interest_fc} interest)")
+        t.add_row("loan status", "open")
+    console.print(Panel(t, title="[bold green]Loan payment[/]", border_style="green"))
     return _render_arena_balance(args, console)
 
 
