@@ -20,6 +20,9 @@ api = [
     "httpx>=0.25",
 ]
 
+[project.scripts]
+coinfox = "coinfox.__main__:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

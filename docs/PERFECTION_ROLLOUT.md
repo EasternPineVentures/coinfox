@@ -39,7 +39,7 @@ Status: done
 
 ## Phase 2: Data Integrity + Trust Layer
 
-Status: next
+Status: done
 
 - Add per-source quality weights (freshness, latency, failure streak)
 - Add staleness gates: reject stale feeds from decision digest
@@ -49,7 +49,7 @@ Status: next
 
 ## Phase 3: Regime Intelligence
 
-Status: next
+Status: done
 
 - Add explicit regime classifier:
   - trend, chop, panic, squeeze, macro-shock
@@ -60,7 +60,7 @@ Status: next
 
 ## Phase 4: Evaluation Harness
 
-Status: next
+Status: done
 
 - Build replay/backtest harness for pulse digests
 - CI quality gate:
