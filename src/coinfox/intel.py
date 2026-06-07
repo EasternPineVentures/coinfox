@@ -11,13 +11,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
-from .sources import derivatives, dev, macro, news, onchain, prices, sentiment, social
+from .sources import chainlink, derivatives, dev, macro, news, onchain, prices, sentiment, social
 
 
 @dataclass
 class Intel:
     prices: Optional[prices.PriceSnapshot] = None
     global_market: Optional[Dict[str, Any]] = None
+    chainlink: Optional[chainlink.ChainlinkSnapshot] = None
     derivatives: Optional[derivatives.DerivSnapshot] = None
     onchain: Optional[onchain.OnchainSnapshot] = None
     news: Optional[news.NewsSnapshot] = None
@@ -32,6 +33,7 @@ SOURCES = {
 
     "prices":        prices.fetch_prices,
     "global_market": prices.fetch_global_market,
+    "chainlink":     chainlink.fetch_chainlink,
     "derivatives":   derivatives.fetch_derivatives,
     "onchain":       onchain.fetch_onchain,
     "news":          news.fetch_news,
@@ -42,7 +44,7 @@ SOURCES = {
 }
 
 
-def gather(max_workers: int = 9, timeout: int = 25) -> Intel:
+def gather(max_workers: int = 10, timeout: int = 25) -> Intel:
     intel = Intel()
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futures = {ex.submit(fn): name for name, fn in SOURCES.items()}

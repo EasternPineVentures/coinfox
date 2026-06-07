@@ -39,6 +39,8 @@ pretends uncertainty does not exist. CoinFox takes the opposite path:
 ## What It Does
 
 - Fetches public market data from free sources.
+- Cross-checks CeFi prices against a decentralized **Chainlink** on-chain feed
+  (keyless, read-only) — see [docs/chainlink_price_check.md](docs/chainlink_price_check.md).
 - Produces `LONG`, `SHORT`, or `NEUTRAL` bias reads.
 - Shows probability, confidence, top drivers, and thesis checks.
 - Runs an always-on `pulse` loop for provider health, source health, replay
@@ -73,7 +75,7 @@ pretends uncertainty does not exist. CoinFox takes the opposite path:
 | --- | --- |
 | [src/coinfox/__main__.py](src/coinfox/__main__.py) | CLI entrypoint (`python -m coinfox`) - all subcommands |
 | [src/coinfox/model.py](src/coinfox/model.py) and [bias.py](src/coinfox/bias.py) | transparent weighted signal model + LONG/SHORT/NEUTRAL read |
-| [src/coinfox/sources/](src/coinfox/sources/) | free public data feeds (prices, news, on-chain, macro, derivatives, and more) |
+| [src/coinfox/sources/](src/coinfox/sources/) | free public data feeds (prices, Chainlink on-chain, news, on-chain, macro, derivatives, and more) |
 | [src/coinfox/ai/](src/coinfox/ai/) | AI router (`FoxClaw`), provider registry, pulse loop, regime, replay |
 | [src/coinfox/community/](src/coinfox/community/) | arena: play-money "NY Fox Exchange", Gold currency, ideas, bets, feed |
 | [src/coinfox/feedback/](src/coinfox/feedback/) | anonymous feedback learning |

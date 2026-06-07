@@ -274,6 +274,22 @@ def render_intel(intel: Intel) -> Panel:
                       Text(f"{intel.prices.spread_pct:.3f}%", style="dim"))
         sections.append(t)
 
+    # --- Chainlink on-chain cross-check (decentralized price reference)
+    if intel.chainlink and intel.chainlink.quotes:
+        cefi_median = intel.prices.median_usd if intel.prices else None
+        ct = Table(title="Chainlink on-chain (decentralized cross-check)", expand=True)
+        ct.add_column("feed", style="cyan")
+        ct.add_column("price", justify="right")
+        ct.add_column("vs CeFi", justify="right")
+        for pair, q in intel.chainlink.quotes.items():
+            deviation = "—"
+            if pair == "BTC/USD" and cefi_median:
+                diff_pct = (q.price - cefi_median) / cefi_median * 100.0
+                style = "green" if abs(diff_pct) < 0.5 else "yellow" if abs(diff_pct) < 2 else "red"
+                deviation = Text(f"{diff_pct:+.3f}%", style=style)
+            ct.add_row(pair, f"${q.price:,.2f}", deviation)
+        sections.append(ct)
+
     # --- Global market
     if intel.global_market:
         g = intel.global_market

@@ -6,4 +6,4 @@ and stitches the results together. Add new sources by dropping a module here
 and registering it in `intel.SOURCES`.
 """
 
-from . import prices, derivatives, onchain, news, social, dev, macro, sentiment  # noqa: F401
+from . import prices, derivatives, onchain, news, social, dev, macro, sentiment, chainlink  # noqa: F401
