@@ -7,6 +7,7 @@ import type {
   ExchangeStats,
   FeedMessage,
   PredictionOutcome,
+  TrackRecord,
   TradePost,
   TradePostDraft,
   User,
@@ -114,6 +115,14 @@ export function suggestUsernames(count = 5): Promise<string[]> {
   );
 }
 
+/** Exchange a Google ID token for a CoinFox account (created or matched). */
+export function authGoogle(idToken: string): Promise<User> {
+  return request<User>("/api/auth/google", {
+    method: "POST",
+    body: JSON.stringify({ id_token: idToken })
+  });
+}
+
 export function createUser(username: string): Promise<User> {
   return request<User>("/api/users", {
     method: "POST",
@@ -127,6 +136,27 @@ export function getUser(userId: string): Promise<User> {
 
 export function listPosts(userId: string, limit = 50): Promise<TradePost[]> {
   return request<TradePost[]>(`/api/posts?limit=${limit}`, { userId });
+}
+
+/** Proof-ranked FYP feed: most credible, fresh, well-argued calls first.
+ *  This is what new visitors should land on. */
+export function listFeed(userId?: string, limit = 50): Promise<TradePost[]> {
+  return request<TradePost[]>(`/api/feed?limit=${limit}`, userId ? { userId } : {});
+}
+
+export function userTrackRecord(userId: string): Promise<TrackRecord> {
+  return request<TrackRecord>(`/api/users/${encodeURIComponent(userId)}/track-record`);
+}
+
+export function createDiscussion(
+  userId: string,
+  draft: { title: string; body?: string; topic?: string }
+): Promise<TradePost> {
+  return request<TradePost>("/api/discussions", {
+    method: "POST",
+    userId,
+    body: JSON.stringify(draft)
+  });
 }
 
 export function createPost(userId: string, draft: TradePostDraft): Promise<TradePost> {
@@ -161,8 +191,20 @@ export function votePost(
   });
 }
 
-export function listComments(postId: string): Promise<Comment[]> {
-  return request<Comment[]>(`/api/posts/${encodeURIComponent(postId)}/comments`);
+export function listComments(postId: string, userId?: string): Promise<Comment[]> {
+  return request<Comment[]>(`/api/posts/${encodeURIComponent(postId)}/comments`, userId ? { userId } : {});
+}
+
+export function voteComment(
+  userId: string,
+  commentId: string,
+  direction: VoteDirection
+): Promise<{ comment_id: string; score: number; viewer_vote: "boost" | "fade" | null }> {
+  return request(`/api/comments/${encodeURIComponent(commentId)}/vote`, {
+    method: "POST",
+    userId,
+    body: JSON.stringify({ direction })
+  });
 }
 
 export function addComment(userId: string, postId: string, content: string): Promise<Comment> {

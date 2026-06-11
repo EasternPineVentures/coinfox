@@ -1,11 +1,19 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   Activity,
+  ArrowBigDown,
+  ArrowBigUp,
+  Award,
   BarChart3,
   Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   CircleDollarSign,
   Clock,
+  Compass,
+  ExternalLink,
+  Flame,
   MessageCircle,
   Plus,
   RefreshCcw,
@@ -39,10 +47,14 @@ import {
   View
 } from "react-native";
 
+import * as Google from "expo-auth-session/providers/google";
+import * as WebBrowser from "expo-web-browser";
 import {
   API_URL,
   addComment,
+  authGoogle,
   closePosition,
+  createDiscussion,
   createPost,
   createUser,
   feedWebSocketUrl,
@@ -51,11 +63,12 @@ import {
   getLeaderboard,
   getUser,
   listComments,
-  listPosts,
+  listFeed,
   openPosition,
   predictOutcome,
   submitBiasFeedback,
   suggestUsernames,
+  voteComment,
   votePost,
   type BiasDirection,
   type BiasRead,
@@ -68,6 +81,8 @@ import {
   parseCoinFoxDirectLink,
   type DirectLinkTarget
 } from "./src/links";
+import { GOOGLE_CLIENT_IDS, isGoogleConfigured } from "./src/authConfig";
+import { RESOURCE_CATEGORIES, RESOURCE_GUIDE } from "./src/resources";
 import { TERMS } from "./src/terms";
 import { colors, radii, shadow } from "./src/theme";
 import type {
@@ -76,7 +91,9 @@ import type {
   ExchangeBoard,
   ExchangePosition,
   ExchangeStats,
+  PostKind,
   PredictionOutcome,
+  TrackRecord,
   TradePost,
   TradePostDraft,
   User as Trader,
@@ -103,7 +120,7 @@ const NO_TOKEN_DISCLAIMER =
   "CoinFox, FoxCoin, FoxClaw, or Eastern Pine. Treat any such token as a scam. Nothing here is " +
   "investment advice.";
 
-type Screen = "read" | "desk" | "post" | "exchange" | "account";
+type Screen = "read" | "desk" | "post" | "exchange" | "resources" | "account";
 type TradeForm = {
   symbol: string;
   direction: Direction;
@@ -225,14 +242,19 @@ const MAJOR_ASSETS: AssetPreset[] = [
   }
 ];
 
+// Lets the OAuth popup hand control back to the app after Google redirects.
+WebBrowser.maybeCompleteAuthSession();
+
 export default function App() {
-  const [screen, setScreen] = useState<Screen>("read");
+  const [screen, setScreen] = useState<Screen>("desk");
   const [userId, setUserId] = useState<string | null>(null);
   const [anonymousUserId, setAnonymousUserId] = useState<string | null>(null);
   const [trader, setTrader] = useState<Trader | null>(null);
   const [username, setUsername] = useState("");
   const [posts, setPosts] = useState<TradePost[]>([]);
   const [readSymbol, setReadSymbol] = useState("BTCUSDT");
+  // Market Watch is a hub: null = show the watchlist; a symbol = its open terminal.
+  const [openMarket, setOpenMarket] = useState<string | null>(null);
   const [biasRead, setBiasRead] = useState<BiasRead | null>(null);
   const [biasLoading, setBiasLoading] = useState(false);
   const [biasError, setBiasError] = useState<string | null>(null);
@@ -243,6 +265,8 @@ export default function App() {
   const [commentsByPost, setCommentsByPost] = useState<Record<string, Comment[]>>({});
   const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState<FormDraft>(INITIAL_DRAFT);
+  const [composeKind, setComposeKind] = useState<PostKind>("discussion");
+  const [discussionDraft, setDiscussionDraft] = useState({ title: "", body: "", topic: "" });
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -263,21 +287,37 @@ export default function App() {
   }, [posts]);
 
   const refresh = useCallback(async (nextUserId = userId, quiet = false) => {
-    if (!nextUserId) {
-      setLoading(false);
-      return;
-    }
     try {
       if (!quiet) setRefreshing(true);
-      const [freshUser, freshPosts] = await Promise.all([
-        getUser(nextUserId),
-        listPosts(nextUserId, 50)
-      ]);
-      setTrader(freshUser);
-      setPosts(freshPosts);
+      // Anonymous visitors still get the live feed — that's the hook. We only
+      // fetch the signed-in user record when there's an account.
+      if (nextUserId) {
+        const [freshUser, freshPosts] = await Promise.all([
+          getUser(nextUserId),
+          listFeed(nextUserId, 50)
+        ]);
+        setTrader(freshUser);
+        setPosts(freshPosts);
+      } else {
+        setTrader(null);
+        setPosts(await listFeed(undefined, 50));
+      }
       setNotice(null);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Could not reach the exchange");
+      // A stored account that no longer exists -> drop it and browse as guest.
+      if (nextUserId && error instanceof Error && /user not found/i.test(error.message)) {
+        await AsyncStorage.removeItem(USER_ID_KEY);
+        await AsyncStorage.removeItem(LEGACY_USER_ID_KEY);
+        setUserId(null);
+        setTrader(null);
+        try {
+          setPosts(await listFeed(undefined, 50));
+        } catch {
+          /* leave whatever we have */
+        }
+      } else {
+        setNotice(error instanceof Error ? error.message : "Could not reach the exchange");
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -368,7 +408,8 @@ export default function App() {
           setUserId(resolvedUserId);
           void refresh(resolvedUserId, true);
         } else {
-          setLoading(false);
+          // No account yet — still load the feed so visitors land on real people.
+          void refresh(null, true);
         }
       })
       .catch(() => setLoading(false));
@@ -419,7 +460,7 @@ export default function App() {
 
   useEffect(() => {
     if (!expandedPostId || commentsByPost[expandedPostId]) return;
-    listComments(expandedPostId)
+    listComments(expandedPostId, userId ?? undefined)
       .then((comments) => setCommentsByPost((current) => ({ ...current, [expandedPostId]: comments })))
       .catch((error) => {
         setNotice(error instanceof Error ? error.message : "Could not load linked comments");
@@ -479,7 +520,14 @@ export default function App() {
     socket.onmessage = (event) => {
       try {
         const message = JSON.parse(String(event.data)) as FeedMessage;
-        if (message.type === "new_post" || message.type === "new_prediction") {
+        if (message.type === "new_vote" && message.post_id && typeof message.score === "number") {
+          // Live count: patch just this post's score so likes roll in real time
+          // (no refetch). Leave viewer_vote alone — that's this device's own state.
+          const liveScore = message.score;
+          setPosts((current) =>
+            current.map((post) => (post.id === message.post_id ? { ...post, score: liveScore } : post))
+          );
+        } else if (message.type === "new_post" || message.type === "new_prediction") {
           void refresh(userId, true);
         }
       } catch {
@@ -534,6 +582,19 @@ export default function App() {
       setScreen("account");
       return;
     }
+    // Optimistic: move the count the instant they tap (Reddit-style), then
+    // reconcile with the server's authoritative score.
+    const voteValue: Record<string, number> = { boost: 1, fade: -1, clear: 0 };
+    const nextVote = direction === "clear" ? null : (direction as "boost" | "fade");
+    const snapshot = posts;
+    setPosts((current) =>
+      current.map((post) => {
+        if (post.id !== postId) return post;
+        const oldValue = voteValue[post.viewer_vote ?? "clear"] ?? 0;
+        const newValue = voteValue[direction] ?? 0;
+        return { ...post, score: (post.score ?? 0) + (newValue - oldValue), viewer_vote: nextVote };
+      })
+    );
     try {
       const result = await votePost(userId, postId, direction);
       setPosts((current) =>
@@ -542,7 +603,10 @@ export default function App() {
         )
       );
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Vote failed");
+      setPosts(snapshot); // roll back the optimistic move on failure
+      if (!(await handleAuthError(error))) {
+        setNotice(error instanceof Error ? error.message : "Vote failed");
+      }
     }
   };
 
@@ -551,10 +615,26 @@ export default function App() {
     await AsyncStorage.removeItem(LEGACY_USER_ID_KEY);
     setUserId(null);
     setTrader(null);
-    setPosts([]);
     setCommentsByPost({});
     setExpandedPostId(null);
     setScreen("account");
+    void refresh(null, true); // keep the feed visible as a guest
+  };
+
+  // If the server says our account no longer exists (e.g. it was reset),
+  // sign out cleanly and prompt a re-claim instead of failing silently.
+  const isMissingAccountError = (error: unknown): boolean =>
+    error instanceof Error && /user not found/i.test(error.message);
+
+  const handleAuthError = async (error: unknown): Promise<boolean> => {
+    if (!isMissingAccountError(error)) return false;
+    await AsyncStorage.removeItem(USER_ID_KEY);
+    await AsyncStorage.removeItem(LEGACY_USER_ID_KEY);
+    setUserId(null);
+    setTrader(null);
+    setScreen("account");
+    setNotice("Your session expired — claim a handle to jump back in.");
+    return true;
   };
 
   const handlePost = async () => {
@@ -575,6 +655,33 @@ export default function App() {
       await refresh(userId, true);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not publish setup");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleDiscussion = async () => {
+    if (!userId) {
+      setScreen("account");
+      return;
+    }
+    const title = discussionDraft.title.trim();
+    if (!title) {
+      setNotice("Give your post a title to start the conversation");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await createDiscussion(userId, {
+        title,
+        body: discussionDraft.body.trim() || undefined,
+        topic: discussionDraft.topic.trim() || undefined
+      });
+      setDiscussionDraft({ title: "", body: "", topic: "" });
+      setScreen("desk");
+      await refresh(userId, true);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not post");
     } finally {
       setSubmitting(false);
     }
@@ -618,10 +725,44 @@ export default function App() {
     setExpandedPostId(next);
     if (next && !commentsByPost[next]) {
       try {
-        const comments = await listComments(next);
+        const comments = await listComments(next, userId ?? undefined);
         setCommentsByPost((current) => ({ ...current, [next]: comments }));
       } catch (error) {
         setNotice(error instanceof Error ? error.message : "Could not load comments");
+      }
+    }
+  };
+
+  const handleCommentVote = async (postId: string, commentId: string, direction: VoteDirection) => {
+    if (!userId) {
+      setScreen("account");
+      return;
+    }
+    const voteValue: Record<string, number> = { boost: 1, fade: -1, clear: 0 };
+    const nextVote = direction === "clear" ? null : (direction as "boost" | "fade");
+    const snapshot = commentsByPost;
+    // Optimistic: the best takes float up the instant you vote.
+    setCommentsByPost((current) => ({
+      ...current,
+      [postId]: (current[postId] || []).map((c) => {
+        if (c.id !== commentId) return c;
+        const oldValue = voteValue[c.viewer_vote ?? "clear"] ?? 0;
+        const newValue = voteValue[direction] ?? 0;
+        return { ...c, score: (c.score ?? 0) + (newValue - oldValue), viewer_vote: nextVote };
+      })
+    }));
+    try {
+      const result = await voteComment(userId, commentId, direction);
+      setCommentsByPost((current) => ({
+        ...current,
+        [postId]: (current[postId] || []).map((c) =>
+          c.id === commentId ? { ...c, score: result.score, viewer_vote: result.viewer_vote } : c
+        )
+      }));
+    } catch (error) {
+      setCommentsByPost(snapshot);
+      if (!(await handleAuthError(error))) {
+        setNotice(error instanceof Error ? error.message : "Vote failed");
       }
     }
   };
@@ -654,7 +795,9 @@ export default function App() {
       );
     }
 
-    if (!userId || !trader) {
+    // Signing in is required only to ACT. Browsing is open to everyone.
+    const signedOut = !userId || !trader;
+    if (signedOut && (screen === "account" || screen === "post" || screen === "exchange")) {
       return (
         <AccountGate
           username={username}
@@ -668,10 +811,25 @@ export default function App() {
     }
 
     if (screen === "read") {
+      if (!openMarket) {
+        return (
+          <MarketWatchHub
+            posts={posts}
+            watchSymbols={MAJOR_ASSETS.map((asset) => asset.symbol)}
+            refreshing={refreshing}
+            onRefresh={() => refresh(userId)}
+            onOpen={(sym) => {
+              setReadSymbol(sym);
+              setOpenMarket(sym);
+            }}
+          />
+        );
+      }
       return (
         <ReadScreen
           symbol={readSymbol}
           setSymbol={setReadSymbol}
+          onBack={() => setOpenMarket(null)}
           currentPrice={readPrice}
           setCurrentPrice={setReadPrice}
           positionSide={positionSide}
@@ -697,9 +855,15 @@ export default function App() {
     if (screen === "post") {
       return (
         <PostScreen
+          composeKind={composeKind}
+          setComposeKind={setComposeKind}
           draft={draft}
           setDraft={setDraft}
+          discussionDraft={discussionDraft}
+          setDiscussionDraft={setDiscussionDraft}
           onSubmit={handlePost}
+          onSubmitDiscussion={handleDiscussion}
+          onCancel={() => setScreen("desk")}
           submitting={submitting}
           notice={notice}
         />
@@ -715,7 +879,7 @@ export default function App() {
           setTradeForm={setTradeForm}
           busy={exchangeBusy}
           notice={notice}
-          myHandle={trader.username}
+          myHandle={trader!.username}
           onOpen={handleOpenPosition}
           onClose={handleClosePosition}
           onRefresh={() => loadExchange(userId)}
@@ -723,10 +887,14 @@ export default function App() {
       );
     }
 
+    if (screen === "resources") {
+      return <ResourcesScreen />;
+    }
+
     if (screen === "account") {
       return (
         <AccountScreen
-          trader={trader}
+          trader={trader!}
           stats={currentStats}
           wsStatus={wsStatus}
           onRefresh={() => refresh(userId)}
@@ -749,12 +917,14 @@ export default function App() {
         commentsByPost={commentsByPost}
         commentDrafts={commentDrafts}
         setCommentDrafts={setCommentDrafts}
+        onCompose={() => setScreen(userId ? "post" : "account")}
         onRefresh={() => refresh(userId)}
         onPredict={handlePrediction}
         onSharePost={handleSharePost}
         onToggleComments={toggleComments}
         onComment={handleComment}
         onVote={handleVote}
+        onCommentVote={handleCommentVote}
       />
     );
   };
@@ -784,13 +954,13 @@ export default function App() {
 
         <View style={styles.content}>{body()}</View>
 
-        {userId && trader ? (
+        {!loading ? (
           <View style={styles.tabBar}>
-            <TabButton active={screen === "read"} label="Read" icon={<BarChart3 size={19} />} onPress={() => setScreen("read")} />
-            <TabButton active={screen === "desk"} label="Desk" icon={<Activity size={19} />} onPress={() => setScreen("desk")} />
-            <TabButton active={screen === "post"} label="Post" icon={<Plus size={19} />} onPress={() => setScreen("post")} />
+            <TabButton active={screen === "desk"} label="Feed" icon={<Flame size={19} />} onPress={() => setScreen("desk")} />
+            <TabButton active={screen === "read"} label="Watch" icon={<BarChart3 size={19} />} onPress={() => { setScreen("read"); setOpenMarket(null); }} />
             <TabButton active={screen === "exchange"} label="NYFE" icon={<CircleDollarSign size={19} />} onPress={() => setScreen("exchange")} />
-            <TabButton active={screen === "account"} label="Account" icon={<User size={19} />} onPress={() => setScreen("account")} />
+            <TabButton active={screen === "resources"} label="Research" icon={<Compass size={19} />} onPress={() => setScreen("resources")} />
+            <TabButton active={screen === "account"} label={userId && trader ? "Account" : "Sign in"} icon={<User size={19} />} onPress={() => setScreen("account")} />
           </View>
         ) : null}
       </KeyboardAvoidingView>
@@ -812,6 +982,28 @@ function CredChip({ amount }: { amount: number }) {
     <View style={styles.credChip}>
       <ShieldCheck size={12} color={colors.blue} />
       <Text style={styles.credChipText}>{amount.toLocaleString()} Cred</Text>
+    </View>
+  );
+}
+
+function TrackRecordChip({ record }: { record?: TrackRecord | null }) {
+  if (!record || record.resolved_calls <= 0 || record.call_win_rate === null) {
+    // No proven calls yet — show an honest "new" marker rather than fake stats.
+    return (
+      <View style={styles.trackChip}>
+        <Award size={12} color={colors.dim} />
+        <Text style={styles.trackChipNew}>New</Text>
+      </View>
+    );
+  }
+  const pct = Math.round(record.call_win_rate * 100);
+  const tone = pct >= 60 ? colors.green : pct >= 45 ? colors.amber : colors.red;
+  return (
+    <View style={[styles.trackChip, { borderColor: tone }]}>
+      <Award size={12} color={tone} />
+      <Text style={[styles.trackChipText, { color: tone }]}>
+        {pct}% · {record.resolved_calls} call{record.resolved_calls === 1 ? "" : "s"}
+      </Text>
     </View>
   );
 }
@@ -848,7 +1040,10 @@ function AccountGate({
       <View style={styles.gateIcon}>
         <ShieldCheck size={34} color={colors.green} />
       </View>
-      <Text style={styles.gateTitle}>Trader check-in</Text>
+      <Text style={styles.gateTitle}>Claim your handle</Text>
+      <Text style={styles.gateSubtitle}>
+        Browsing is free. Claim a handle to post, vote, and join the conversation — it's yours and stays with you.
+      </Text>
       <View style={styles.handleRow}>
         <Field
           label="Handle"
@@ -865,11 +1060,11 @@ function AccountGate({
         </Pressable>
       </View>
       <Text style={styles.anonNote}>
-        You're 100% anonymous. Pick a random market handle or make your own — share real details only if you choose to.
+        Anonymous by default — your handle is all anyone sees. Social sign-in (Google, Apple, and more) is coming soon.
       </Text>
       <Pressable style={styles.primaryButton} onPress={onCreate} disabled={submitting}>
         {submitting ? <ActivityIndicator color={colors.bg} /> : <Check size={18} color={colors.bg} />}
-        <Text style={styles.primaryButtonText}>Enter exchange</Text>
+        <Text style={styles.primaryButtonText}>Claim handle</Text>
       </Pressable>
       {notice ? <Notice message={notice} /> : null}
       <DisclaimerCard />
@@ -877,9 +1072,110 @@ function AccountGate({
   );
 }
 
+function ResourcesScreen() {
+  const openLink = (url: string) => {
+    void Linking.openURL(url);
+  };
+  return (
+    <ScrollView contentContainerStyle={styles.scrollContent}>
+      <View style={styles.sectionHeader}>
+        <Compass size={20} color={colors.green} />
+        <Text style={styles.sectionTitle}>Research</Text>
+      </View>
+      <Text style={styles.watchSubtitle}>
+        Everything trading in one place. Tap any tool to open it. These are independent third-party sites.
+      </Text>
+
+      <View style={styles.guidePanel}>
+        <Text style={styles.guideHeading}>Start here — what do you need?</Text>
+        {RESOURCE_GUIDE.map((item) => (
+          <Pressable key={item.url} style={styles.guideRow} onPress={() => openLink(item.url)}>
+            <View style={styles.guideRowMain}>
+              <Text style={styles.guideNeed}>{item.need}</Text>
+              <Text style={styles.guideWhy}>{item.why}</Text>
+            </View>
+            <View style={styles.guidePick}>
+              <Text style={styles.guidePickText}>{item.pick}</Text>
+              <ChevronRight size={15} color={colors.green} />
+            </View>
+          </Pressable>
+        ))}
+      </View>
+
+      <Text style={styles.resourceBrowseLabel}>Or browse everything</Text>
+      {RESOURCE_CATEGORIES.map((category) => (
+        <View key={category.title} style={styles.resourceCategory}>
+          <Text style={styles.resourceCategoryTitle}>{category.title}</Text>
+          <Text style={styles.resourceCategoryCaption}>{category.caption}</Text>
+          {category.links.map((link) => (
+            <Pressable key={link.url} style={styles.resourceRow} onPress={() => openLink(link.url)}>
+              <View style={styles.resourceRowMain}>
+                <Text style={styles.resourceName}>{link.name}</Text>
+                <Text style={styles.resourceBlurb}>{link.blurb}</Text>
+              </View>
+              <ExternalLink size={16} color={colors.dim} />
+            </Pressable>
+          ))}
+        </View>
+      ))}
+    </ScrollView>
+  );
+}
+
+function MarketWatchHub({
+  posts,
+  watchSymbols,
+  refreshing,
+  onRefresh,
+  onOpen
+}: {
+  posts: TradePost[];
+  watchSymbols: string[];
+  refreshing: boolean;
+  onRefresh: () => void;
+  onOpen: (symbol: string) => void;
+}) {
+  return (
+    <ScrollView
+      contentContainerStyle={styles.scrollContent}
+      refreshControl={<RefreshControl tintColor={colors.green} refreshing={refreshing} onRefresh={onRefresh} />}
+    >
+      <View style={styles.sectionHeader}>
+        <Activity size={20} color={colors.green} />
+        <Text style={styles.sectionTitle}>Market Watch</Text>
+      </View>
+      <Text style={styles.watchSubtitle}>Live terminals watching each market. Tap one to open it.</Text>
+      {watchSymbols.map((sym) => (
+        <WatchRow key={sym} symbol={sym} posts={posts} onPress={() => onOpen(sym)} />
+      ))}
+    </ScrollView>
+  );
+}
+
+function WatchRow({ symbol, posts, onPress }: { symbol: string; posts: TradePost[]; onPress: () => void }) {
+  // Reuse the terminal's own read logic for a compact summary per market.
+  const read = useMemo(() => buildMarketRead(symbol, posts, null, "flat", null, null), [posts, symbol]);
+  const pctUp = Math.round(read.chanceUp * 100);
+  return (
+    <Pressable style={styles.watchRow} onPress={onPress}>
+      <View style={styles.watchRowMain}>
+        <Text style={styles.watchSymbol}>{read.symbol}</Text>
+        <View style={[styles.watchActionPill, { borderColor: read.accent }]}>
+          <Text style={[styles.watchActionText, { color: read.accent }]}>{read.action}</Text>
+        </View>
+      </View>
+      <View style={styles.watchRowRight}>
+        <Text style={[styles.watchChance, { color: read.accent }]}>{pctUp}% up</Text>
+        <ChevronRight size={18} color={colors.dim} />
+      </View>
+    </Pressable>
+  );
+}
+
 function ReadScreen({
   symbol,
   setSymbol,
+  onBack,
   currentPrice,
   setCurrentPrice,
   positionSide,
@@ -898,6 +1194,7 @@ function ReadScreen({
 }: {
   symbol: string;
   setSymbol: (value: string) => void;
+  onBack: () => void;
   currentPrice: string;
   setCurrentPrice: (value: string) => void;
   positionSide: PositionSide;
@@ -925,6 +1222,10 @@ function ReadScreen({
       contentContainerStyle={styles.scrollContent}
       refreshControl={<RefreshControl tintColor={colors.green} refreshing={refreshing} onRefresh={onRefresh} />}
     >
+      <Pressable style={styles.backRow} onPress={onBack}>
+        <ChevronLeft size={18} color={colors.muted} />
+        <Text style={styles.backRowText}>Market Watch</Text>
+      </Pressable>
       <View style={styles.readControls}>
         <Field
           label="Market"
@@ -1084,14 +1385,16 @@ function DeskScreen({
   commentsByPost,
   commentDrafts,
   setCommentDrafts,
+  onCompose,
   onRefresh,
   onPredict,
   onSharePost,
   onToggleComments,
   onComment,
-  onVote
+  onVote,
+  onCommentVote
 }: {
-  trader: Trader;
+  trader: Trader | null;
   posts: TradePost[];
   stats: { open: number; resolved: number; tp: number; sl: number };
   wsStatus: WsStatus;
@@ -1101,75 +1404,162 @@ function DeskScreen({
   commentsByPost: Record<string, Comment[]>;
   commentDrafts: Record<string, string>;
   setCommentDrafts: Dispatch<SetStateAction<Record<string, string>>>;
+  onCompose: () => void;
   onRefresh: () => void;
   onPredict: (postId: string, outcome: PredictionOutcome) => void;
   onSharePost: (post: TradePost) => void;
   onToggleComments: (postId: string) => void;
   onComment: (postId: string) => void;
   onVote: (postId: string, direction: VoteDirection) => void;
+  onCommentVote: (postId: string, commentId: string, direction: VoteDirection) => void;
 }) {
   return (
     <ScrollView
       contentContainerStyle={styles.scrollContent}
       refreshControl={<RefreshControl tintColor={colors.green} refreshing={refreshing} onRefresh={onRefresh} />}
     >
-      <View style={styles.scoreRow}>
-        <MetricTile label="Gold" value={String(trader.gold)} accent={colors.amber} icon={<CircleDollarSign size={17} />} />
-        <MetricTile label="Open" value={String(stats.open)} accent={colors.green} icon={<Activity size={17} />} />
-        <MetricTile label="Resolved" value={String(stats.resolved)} accent={colors.blue} icon={<BarChart3 size={17} />} />
-      </View>
-
-      <View style={styles.marketStrip}>
-        <Clock size={16} color={colors.amber} />
-        <Text style={styles.marketStripText}>NY session</Text>
-        <Text style={styles.marketStripMeta}>9:30 AM-4:00 PM ET</Text>
-        {wsStatus === "connected" ? <Text style={styles.marketLive}>LIVE</Text> : null}
-      </View>
+      <Pressable style={styles.composeBar} onPress={onCompose}>
+        <View style={styles.composeAvatar}>
+          <Text style={styles.composeAvatarText}>{trader ? trader.username.slice(0, 1).toUpperCase() : "?"}</Text>
+        </View>
+        <Text style={styles.composePrompt}>
+          {trader ? `What's on your mind, ${trader.username}?` : "Sign in to join the conversation"}
+        </Text>
+        <View style={styles.composeCta}>
+          <Plus size={16} color={colors.bg} />
+          <Text style={styles.composeCtaText}>{trader ? "Post" : "Sign in"}</Text>
+        </View>
+      </Pressable>
 
       {notice ? <Notice message={notice} /> : null}
 
       {posts.length === 0 ? (
         <EmptyState />
       ) : (
-        posts.map((post) => (
-          <TradeCard
-            key={post.id}
-            post={post}
-            expanded={expandedPostId === post.id}
-            comments={commentsByPost[post.id] || []}
-            commentDraft={commentDrafts[post.id] || ""}
-            setCommentDraft={(value) => setCommentDrafts((current) => ({ ...current, [post.id]: value }))}
-            onPredict={onPredict}
-            onSharePost={() => onSharePost(post)}
-            onToggleComments={() => onToggleComments(post.id)}
-            onComment={() => onComment(post.id)}
-            onVote={onVote}
-          />
-        ))
+        posts.map((post) =>
+          post.kind === "discussion" ? (
+            <DiscussionCard
+              key={post.id}
+              post={post}
+              expanded={expandedPostId === post.id}
+              comments={commentsByPost[post.id] || []}
+              commentDraft={commentDrafts[post.id] || ""}
+              setCommentDraft={(value) => setCommentDrafts((current) => ({ ...current, [post.id]: value }))}
+              onSharePost={() => onSharePost(post)}
+              onToggleComments={() => onToggleComments(post.id)}
+              onComment={() => onComment(post.id)}
+              onVote={onVote}
+              onCommentVote={(commentId, direction) => onCommentVote(post.id, commentId, direction)}
+            />
+          ) : (
+            <TradeCard
+              key={post.id}
+              post={post}
+              expanded={expandedPostId === post.id}
+              comments={commentsByPost[post.id] || []}
+              commentDraft={commentDrafts[post.id] || ""}
+              setCommentDraft={(value) => setCommentDrafts((current) => ({ ...current, [post.id]: value }))}
+              onPredict={onPredict}
+              onSharePost={() => onSharePost(post)}
+              onToggleComments={() => onToggleComments(post.id)}
+              onComment={() => onComment(post.id)}
+              onVote={onVote}
+              onCommentVote={(commentId, direction) => onCommentVote(post.id, commentId, direction)}
+            />
+          )
+        )
       )}
     </ScrollView>
   );
 }
 
 function PostScreen({
+  composeKind,
+  setComposeKind,
   draft,
   setDraft,
+  discussionDraft,
+  setDiscussionDraft,
   onSubmit,
+  onSubmitDiscussion,
+  onCancel,
   submitting,
   notice
 }: {
+  composeKind: PostKind;
+  setComposeKind: (kind: PostKind) => void;
   draft: FormDraft;
   setDraft: Dispatch<SetStateAction<FormDraft>>;
+  discussionDraft: { title: string; body: string; topic: string };
+  setDiscussionDraft: Dispatch<SetStateAction<{ title: string; body: string; topic: string }>>;
   onSubmit: () => void;
+  onSubmitDiscussion: () => void;
+  onCancel: () => void;
   submitting: boolean;
   notice: string | null;
 }) {
   const update = (key: keyof FormDraft, value: string) => {
     setDraft((current) => ({ ...current, [key]: value }));
   };
+  const updateDiscussion = (key: "title" | "body" | "topic", value: string) => {
+    setDiscussionDraft((current) => ({ ...current, [key]: value }));
+  };
 
   return (
     <ScrollView contentContainerStyle={styles.scrollContent}>
+      <Pressable style={styles.backRow} onPress={onCancel}>
+        <ChevronLeft size={18} color={colors.muted} />
+        <Text style={styles.backRowText}>Feed</Text>
+      </Pressable>
+
+      <View style={styles.segment}>
+        <SegmentButton
+          active={composeKind === "discussion"}
+          label="Discussion"
+          icon={<MessageCircle size={16} />}
+          onPress={() => setComposeKind("discussion")}
+        />
+        <SegmentButton
+          active={composeKind === "call"}
+          label="Trade setup"
+          icon={<Target size={16} />}
+          onPress={() => setComposeKind("call")}
+        />
+      </View>
+
+      {composeKind === "discussion" ? (
+        <View style={styles.composePanel}>
+          <View style={styles.sectionHeader}>
+            <MessageCircle size={20} color={colors.green} />
+            <Text style={styles.sectionTitle}>Start a discussion</Text>
+          </View>
+          <Field
+            label="Title"
+            value={discussionDraft.title}
+            onChangeText={(value) => updateDiscussion("title", value)}
+            placeholder="What's on your mind?"
+          />
+          <Field
+            label="Details (optional)"
+            value={discussionDraft.body}
+            onChangeText={(value) => updateDiscussion("body", value)}
+            placeholder="Share your take — macro, a thesis, a question, anything markets."
+            multiline
+            inputStyle={styles.textArea}
+          />
+          <Field
+            label="Topic tag (optional)"
+            value={discussionDraft.topic}
+            onChangeText={(value) => updateDiscussion("topic", value.toUpperCase())}
+            placeholder="e.g. MACRO, FED, BTC"
+          />
+          <Pressable style={styles.primaryButton} onPress={onSubmitDiscussion} disabled={submitting}>
+            {submitting ? <ActivityIndicator color={colors.bg} /> : <Send size={18} color={colors.bg} />}
+            <Text style={styles.primaryButtonText}>Post</Text>
+          </Pressable>
+          {notice ? <Notice message={notice} /> : null}
+        </View>
+      ) : (
       <View style={styles.composePanel}>
         <View style={styles.sectionHeader}>
           <Target size={20} color={colors.green} />
@@ -1225,6 +1615,7 @@ function PostScreen({
         </Pressable>
         {notice ? <Notice message={notice} /> : null}
       </View>
+      )}
     </ScrollView>
   );
 }
@@ -1500,6 +1891,166 @@ function AccountScreen({
   );
 }
 
+function CommentRow({
+  comment,
+  onVote
+}: {
+  comment: Comment;
+  onVote: (commentId: string, direction: VoteDirection) => void;
+}) {
+  const score = comment.score ?? 0;
+  const boosted = comment.viewer_vote === "boost";
+  const faded = comment.viewer_vote === "fade";
+  return (
+    <View style={styles.commentRow}>
+      <View style={styles.commentVote}>
+        <Pressable hitSlop={6} accessibilityLabel="Boost reply" onPress={() => onVote(comment.id, boosted ? "clear" : "boost")}>
+          <ArrowBigUp size={16} color={boosted ? colors.green : colors.dim} fill={boosted ? colors.green : "transparent"} />
+        </Pressable>
+        <Text style={[styles.commentVoteCount, { color: score > 0 ? colors.green : score < 0 ? colors.red : colors.dim }]}>
+          {score}
+        </Text>
+        <Pressable hitSlop={6} accessibilityLabel="Fade reply" onPress={() => onVote(comment.id, faded ? "clear" : "fade")}>
+          <ArrowBigDown size={16} color={faded ? colors.red : colors.dim} fill={faded ? colors.red : "transparent"} />
+        </Pressable>
+      </View>
+      <View style={styles.commentMain}>
+        <Text style={styles.commentAuthor}>{comment.user.username}</Text>
+        <Text style={styles.commentBody}>{comment.content}</Text>
+      </View>
+    </View>
+  );
+}
+
+function TopCommentPreview({ post, onPress }: { post: TradePost; onPress: () => void }) {
+  const top = post.top_comment;
+  const count = post.comment_count ?? 0;
+  if (!top) {
+    return (
+      <Pressable style={styles.topComment} onPress={onPress}>
+        <Text style={styles.topCommentEmpty}>Be the first to weigh in</Text>
+      </Pressable>
+    );
+  }
+  return (
+    <Pressable style={styles.topComment} onPress={onPress}>
+      <Text style={styles.topCommentLabel}>Top reply</Text>
+      <Text style={styles.topCommentText} numberOfLines={2}>
+        <Text style={styles.topCommentAuthor}>{top.username} </Text>
+        {top.content}
+      </Text>
+      {count > 1 ? <Text style={styles.topCommentMore}>See all {count} replies</Text> : null}
+    </Pressable>
+  );
+}
+
+function DiscussionCard({
+  post,
+  expanded,
+  comments,
+  commentDraft,
+  setCommentDraft,
+  onSharePost,
+  onToggleComments,
+  onComment,
+  onVote,
+  onCommentVote
+}: {
+  post: TradePost;
+  expanded: boolean;
+  comments: Comment[];
+  commentDraft: string;
+  setCommentDraft: (value: string) => void;
+  onSharePost: () => void;
+  onToggleComments: () => void;
+  onComment: () => void;
+  onVote: (postId: string, direction: VoteDirection) => void;
+  onCommentVote: (commentId: string, direction: VoteDirection) => void;
+}) {
+  const score = post.score ?? 0;
+  const boosted = post.viewer_vote === "boost";
+  const faded = post.viewer_vote === "fade";
+  const topic = (post.symbol || "").trim();
+
+  return (
+    <View style={styles.postCard}>
+      <View style={styles.postTop}>
+        <View style={styles.symbolBlock}>
+          <View style={styles.discussionTag}>
+            <MessageCircle size={13} color={colors.blue} />
+            <Text style={styles.discussionTagText}>Discussion</Text>
+          </View>
+          {topic ? (
+            <View style={styles.topicChip}>
+              <Text style={styles.topicChipText}>{topic}</Text>
+            </View>
+          ) : null}
+        </View>
+        <View style={styles.authorBlock}>
+          <Text style={styles.authorText} numberOfLines={1}>{post.user.username}</Text>
+          <View style={styles.authorChips}>
+            <TrackRecordChip record={post.track_record} />
+            <CredChip amount={post.user.reputation ?? 0} />
+          </View>
+        </View>
+      </View>
+
+      {post.title ? <Text style={styles.discussionTitle}>{post.title}</Text> : null}
+      {post.body ? <Text style={styles.reasoningText}>{post.body}</Text> : null}
+
+      <View style={styles.voteBar}>
+        <View style={[styles.votePill, boosted ? styles.votePillBoost : faded ? styles.votePillFade : null]}>
+          <Pressable hitSlop={8} accessibilityLabel="Boost" onPress={() => onVote(post.id, boosted ? "clear" : "boost")}>
+            <ArrowBigUp size={22} color={boosted ? colors.green : colors.dim} fill={boosted ? colors.green : "transparent"} />
+          </Pressable>
+          <Text style={[styles.voteCount, { color: score > 0 ? colors.green : score < 0 ? colors.red : colors.muted }]}>
+            {score > 0 ? `+${score}` : score}
+          </Text>
+          <Pressable hitSlop={8} accessibilityLabel="Fade" onPress={() => onVote(post.id, faded ? "clear" : "fade")}>
+            <ArrowBigDown size={22} color={faded ? colors.red : colors.dim} fill={faded ? colors.red : "transparent"} />
+          </Pressable>
+        </View>
+        <Text style={styles.ageText}>{formatAge(post.created_at)}</Text>
+      </View>
+
+      {!expanded ? <TopCommentPreview post={post} onPress={onToggleComments} /> : null}
+
+      <View style={styles.postUtilityRow}>
+        <Pressable style={styles.commentToggle} onPress={onToggleComments}>
+          <MessageCircle size={16} color={colors.blue} />
+          <Text style={styles.commentToggleText}>{expanded ? "Hide replies" : "Reply"}</Text>
+          <ChevronDown size={16} color={colors.dim} style={expanded ? styles.chevronOpen : undefined} />
+        </Pressable>
+        <Pressable style={styles.shareToggle} onPress={onSharePost} accessibilityLabel="Share post link">
+          <Share2 size={16} color={colors.green} />
+          <Text style={styles.shareToggleText}>Share</Text>
+        </Pressable>
+      </View>
+
+      {expanded ? (
+        <View style={styles.commentsPane}>
+          {comments.length === 0 ? <Text style={styles.emptyCommentText}>No replies yet. Start the conversation.</Text> : null}
+          {comments.map((comment) => (
+            <CommentRow key={comment.id} comment={comment} onVote={onCommentVote} />
+          ))}
+          <View style={styles.commentComposer}>
+            <TextInput
+              value={commentDraft}
+              onChangeText={setCommentDraft}
+              placeholder="Add your take…"
+              placeholderTextColor={colors.dim}
+              style={styles.commentInput}
+            />
+            <Pressable style={styles.iconButton} onPress={onComment}>
+              <Send size={16} color={colors.bg} />
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 function TradeCard({
   post,
   expanded,
@@ -1510,7 +2061,8 @@ function TradeCard({
   onSharePost,
   onToggleComments,
   onComment,
-  onVote
+  onVote,
+  onCommentVote
 }: {
   post: TradePost;
   expanded: boolean;
@@ -1522,6 +2074,7 @@ function TradeCard({
   onToggleComments: () => void;
   onComment: () => void;
   onVote: (postId: string, direction: VoteDirection) => void;
+  onCommentVote: (commentId: string, direction: VoteDirection) => void;
 }) {
   const isLong = post.direction === "long";
   const accent = isLong ? colors.green : colors.red;
@@ -1544,11 +2097,14 @@ function TradeCard({
         <View style={styles.authorBlock}>
           <Text style={styles.authorText} numberOfLines={1}>{post.user.username}</Text>
           <View style={styles.authorChips}>
-            <GoldChip amount={post.user.gold} compact />
+            <TrackRecordChip record={post.track_record} />
             <CredChip amount={post.user.reputation ?? 0} />
           </View>
         </View>
       </View>
+
+      {/* Lead with the person's thinking — it's a shared idea, not an order. */}
+      {post.reasoning ? <Text style={styles.reasoningText}>{post.reasoning}</Text> : null}
 
       <View style={styles.levels}>
         <Level label="Entry" value={formatPrice(post.entry_price)} />
@@ -1556,42 +2112,62 @@ function TradeCard({
         <Level label="Target" value={formatPrice(post.take_profit)} />
       </View>
 
-      <View style={styles.contextRow}>
-        <Text style={styles.contextText}>Model {formatPercent(post.foxtrot_score)}</Text>
-        <Text style={styles.contextText}>{post.regime || "regime n/a"}</Text>
-        <Text style={styles.contextText}>Conf {formatPercent(post.confidence)}</Text>
-      </View>
-
-      {post.reasoning ? <Text style={styles.reasoningText}>{post.reasoning}</Text> : null}
+      {post.foxtrot_score != null || post.regime || post.confidence != null ? (
+        <View style={styles.contextRow}>
+          {post.foxtrot_score != null ? (
+            <Text style={styles.contextText}>Model {formatPercent(post.foxtrot_score)}</Text>
+          ) : null}
+          {post.regime ? <Text style={styles.contextText}>{post.regime}</Text> : null}
+          {post.confidence != null ? (
+            <Text style={styles.contextText}>Conf {formatPercent(post.confidence)}</Text>
+          ) : null}
+        </View>
+      ) : null}
 
       <View style={styles.voteBar}>
-        <Pressable
-          style={[styles.voteButton, boosted ? styles.voteBoostActive : null]}
-          onPress={() => onVote(post.id, boosted ? "clear" : "boost")}
-        >
-          <TrendingUp size={15} color={boosted ? colors.green : colors.dim} />
-          <Text style={[styles.voteButtonText, boosted ? { color: colors.green } : null]}>Boost</Text>
-        </Pressable>
-        <Text style={[styles.voteScore, { color: score > 0 ? colors.green : score < 0 ? colors.red : colors.muted }]}>
-          {score > 0 ? `+${score}` : score}
-        </Text>
-        <Pressable
-          style={[styles.voteButton, faded ? styles.voteFadeActive : null]}
-          onPress={() => onVote(post.id, faded ? "clear" : "fade")}
-        >
-          <TrendingDown size={15} color={faded ? colors.red : colors.dim} />
-          <Text style={[styles.voteButtonText, faded ? { color: colors.red } : null]}>Fade</Text>
-        </Pressable>
+        <View style={[styles.votePill, boosted ? styles.votePillBoost : faded ? styles.votePillFade : null]}>
+          <Pressable
+            hitSlop={8}
+            accessibilityLabel="Boost"
+            onPress={() => onVote(post.id, boosted ? "clear" : "boost")}
+          >
+            <ArrowBigUp
+              size={22}
+              color={boosted ? colors.green : colors.dim}
+              fill={boosted ? colors.green : "transparent"}
+            />
+          </Pressable>
+          <Text
+            style={[
+              styles.voteCount,
+              { color: score > 0 ? colors.green : score < 0 ? colors.red : colors.muted }
+            ]}
+          >
+            {score > 0 ? `+${score}` : score}
+          </Text>
+          <Pressable
+            hitSlop={8}
+            accessibilityLabel="Fade"
+            onPress={() => onVote(post.id, faded ? "clear" : "fade")}
+          >
+            <ArrowBigDown
+              size={22}
+              color={faded ? colors.red : colors.dim}
+              fill={faded ? colors.red : "transparent"}
+            />
+          </Pressable>
+        </View>
+        <Text style={styles.voteHint}>{score === 0 ? "Be the first to vote" : score > 0 ? "trending up" : "fading"}</Text>
       </View>
 
       <View style={styles.predictionBar}>
         <View style={styles.predictionSide}>
           <Target size={14} color={colors.green} />
-          <Text style={styles.predictionText}>TP {predictionStats.tp_predictions}</Text>
+          <Text style={styles.predictionText}>{predictionStats.tp_predictions} see target</Text>
         </View>
         <View style={styles.predictionSide}>
           <ShieldCheck size={14} color={colors.red} />
-          <Text style={styles.predictionText}>Check {predictionStats.sl_predictions}</Text>
+          <Text style={styles.predictionText}>{predictionStats.sl_predictions} see stop</Text>
         </View>
         <Text style={styles.ageText}>{formatAge(post.created_at)}</Text>
       </View>
@@ -1604,25 +2180,32 @@ function TradeCard({
       ) : post.user_prediction ? (
         <View style={styles.userPrediction}>
           <Check size={15} color={colors.green} />
-          <Text style={styles.userPredictionText}>You picked {post.user_prediction.replace("_", " ").toUpperCase()}</Text>
+          <Text style={styles.userPredictionText}>
+            You called {post.user_prediction === "tp_hit" ? "target" : "stop"}
+          </Text>
         </View>
       ) : (
-        <View style={styles.actionRow}>
-          <Pressable style={styles.actionButton} onPress={() => onPredict(post.id, "tp_hit")}>
-            <TrendingUp size={16} color={colors.green} />
-            <Text style={styles.actionButtonText}>TP hit</Text>
-          </Pressable>
-          <Pressable style={styles.actionButton} onPress={() => onPredict(post.id, "sl_hit")}>
-            <TrendingDown size={16} color={colors.red} />
-            <Text style={styles.actionButtonText}>Check hit</Text>
-          </Pressable>
+        <View>
+          <Text style={styles.pollPrompt}>Where do you think it goes?</Text>
+          <View style={styles.actionRow}>
+            <Pressable style={styles.actionButton} onPress={() => onPredict(post.id, "tp_hit")}>
+              <TrendingUp size={16} color={colors.green} />
+              <Text style={styles.actionButtonText}>Hits target</Text>
+            </Pressable>
+            <Pressable style={styles.actionButton} onPress={() => onPredict(post.id, "sl_hit")}>
+              <TrendingDown size={16} color={colors.red} />
+              <Text style={styles.actionButtonText}>Stops out</Text>
+            </Pressable>
+          </View>
         </View>
       )}
+
+      {!expanded ? <TopCommentPreview post={post} onPress={onToggleComments} /> : null}
 
       <View style={styles.postUtilityRow}>
         <Pressable style={styles.commentToggle} onPress={onToggleComments}>
           <MessageCircle size={16} color={colors.blue} />
-          <Text style={styles.commentToggleText}>Comments</Text>
+          <Text style={styles.commentToggleText}>{expanded ? "Hide replies" : "Reply"}</Text>
           <ChevronDown size={16} color={colors.dim} style={expanded ? styles.chevronOpen : undefined} />
         </Pressable>
         <Pressable style={styles.shareToggle} onPress={onSharePost} accessibilityLabel="Share setup link">
@@ -1635,16 +2218,13 @@ function TradeCard({
         <View style={styles.commentsPane}>
           {comments.length === 0 ? <Text style={styles.emptyCommentText}>No comments yet.</Text> : null}
           {comments.map((comment) => (
-            <View key={comment.id} style={styles.commentRow}>
-              <Text style={styles.commentAuthor}>{comment.user.username}</Text>
-              <Text style={styles.commentBody}>{comment.content}</Text>
-            </View>
+            <CommentRow key={comment.id} comment={comment} onVote={onCommentVote} />
           ))}
           <View style={styles.commentComposer}>
             <TextInput
               value={commentDraft}
               onChangeText={setCommentDraft}
-              placeholder="Reply"
+              placeholder="Add your take…"
               placeholderTextColor={colors.dim}
               style={styles.commentInput}
             />
@@ -2865,42 +3445,293 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "800"
   },
-  voteBar: {
+  trackChip: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    gap: 12,
-    marginTop: 12,
-    paddingVertical: 8,
-    borderRadius: radii.md,
+    gap: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: radii.sm,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.panelAlt
   },
-  voteButton: {
+  trackChipText: {
+    fontSize: 11,
+    fontWeight: "800"
+  },
+  trackChipNew: {
+    color: colors.dim,
+    fontSize: 11,
+    fontWeight: "700"
+  },
+  discussionTag: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: radii.sm
+    gap: 5,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: radii.sm,
+    backgroundColor: colors.blueSoft
   },
-  voteBoostActive: {
+  discussionTagText: {
+    color: colors.blue,
+    fontSize: 12,
+    fontWeight: "800"
+  },
+  topicChip: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: radii.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.panelAlt
+  },
+  topicChipText: {
+    color: colors.muted,
+    fontSize: 11,
+    fontWeight: "800"
+  },
+  discussionTitle: {
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: "800",
+    lineHeight: 22,
+    marginBottom: 4
+  },
+  backRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginBottom: 12
+  },
+  backRowText: {
+    color: colors.muted,
+    fontSize: 14,
+    fontWeight: "700"
+  },
+  watchSubtitle: {
+    color: colors.muted,
+    fontSize: 13,
+    marginTop: 6,
+    marginBottom: 14
+  },
+  watchRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.panel,
+    marginBottom: 10
+  },
+  watchRowMain: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10
+  },
+  watchSymbol: {
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: "800"
+  },
+  watchActionPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: radii.sm,
+    borderWidth: 1
+  },
+  watchActionText: {
+    fontSize: 11,
+    fontWeight: "800"
+  },
+  watchRowRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8
+  },
+  watchChance: {
+    fontSize: 14,
+    fontWeight: "800"
+  },
+  composeBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.panel,
+    marginBottom: 12
+  },
+  composeAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
     backgroundColor: colors.greenSoft
   },
-  voteFadeActive: {
-    backgroundColor: colors.redSoft
+  composeAvatarText: {
+    color: colors.green,
+    fontSize: 14,
+    fontWeight: "800"
   },
-  voteButtonText: {
-    color: colors.dim,
+  composePrompt: {
+    flex: 1,
+    color: colors.muted,
+    fontSize: 14
+  },
+  composeCta: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: radii.md,
+    backgroundColor: colors.green
+  },
+  composeCtaText: {
+    color: colors.bg,
     fontSize: 13,
     fontWeight: "800"
   },
-  voteScore: {
-    fontSize: 16,
+  guidePanel: {
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.greenSoft,
+    backgroundColor: colors.panel,
+    padding: 12,
+    marginBottom: 20
+  },
+  guideHeading: {
+    color: colors.green,
+    fontSize: 13,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginBottom: 10
+  },
+  guideRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 10,
+    borderTopWidth: 1,
+    borderTopColor: colors.border
+  },
+  guideRowMain: {
+    flex: 1,
+    paddingRight: 10
+  },
+  guideNeed: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: "700"
+  },
+  guideWhy: {
+    color: colors.muted,
+    fontSize: 12,
+    marginTop: 2
+  },
+  guidePick: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2
+  },
+  guidePickText: {
+    color: colors.green,
+    fontSize: 13,
+    fontWeight: "800"
+  },
+  resourceBrowseLabel: {
+    color: colors.dim,
+    fontSize: 12,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginBottom: 12
+  },
+  resourceCategory: {
+    marginBottom: 18
+  },
+  resourceCategoryTitle: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: "800",
+    marginBottom: 2
+  },
+  resourceCategoryCaption: {
+    color: colors.dim,
+    fontSize: 12,
+    marginBottom: 8
+  },
+  resourceRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.panel,
+    marginBottom: 8
+  },
+  resourceRowMain: {
+    flex: 1,
+    paddingRight: 10
+  },
+  resourceName: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: "700"
+  },
+  resourceBlurb: {
+    color: colors.muted,
+    fontSize: 12,
+    marginTop: 2
+  },
+  voteBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginTop: 12
+  },
+  votePill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.panelAlt
+  },
+  votePillBoost: {
+    borderColor: colors.green,
+    backgroundColor: colors.greenSoft
+  },
+  votePillFade: {
+    borderColor: colors.red,
+    backgroundColor: colors.redSoft
+  },
+  voteCount: {
+    fontSize: 15,
     fontWeight: "900",
-    minWidth: 40,
+    minWidth: 34,
     textAlign: "center"
+  },
+  voteHint: {
+    color: colors.dim,
+    fontSize: 12,
+    fontWeight: "600"
   },
   nyfeBanner: {
     borderRadius: radii.lg,
@@ -3138,6 +3969,12 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginLeft: "auto"
   },
+  pollPrompt: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: "700",
+    marginBottom: 6
+  },
   actionRow: {
     flexDirection: "row",
     gap: 8
@@ -3240,7 +4077,58 @@ const styles = StyleSheet.create({
     fontSize: 13
   },
   commentRow: {
+    flexDirection: "row",
+    gap: 8,
+    paddingVertical: 4
+  },
+  commentVote: {
+    alignItems: "center",
+    width: 26,
+    gap: 1
+  },
+  commentVoteCount: {
+    fontSize: 11,
+    fontWeight: "800"
+  },
+  commentMain: {
+    flex: 1,
     gap: 2
+  },
+  topComment: {
+    marginTop: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: radii.md,
+    backgroundColor: colors.panelAlt,
+    borderLeftWidth: 2,
+    borderLeftColor: colors.blue,
+    gap: 2
+  },
+  topCommentLabel: {
+    color: colors.dim,
+    fontSize: 10,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.5
+  },
+  topCommentText: {
+    color: colors.text,
+    fontSize: 13,
+    lineHeight: 18
+  },
+  topCommentAuthor: {
+    color: colors.blue,
+    fontWeight: "800"
+  },
+  topCommentMore: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: "700",
+    marginTop: 2
+  },
+  topCommentEmpty: {
+    color: colors.dim,
+    fontSize: 13
   },
   commentAuthor: {
     color: colors.blue,
@@ -3594,6 +4482,13 @@ const styles = StyleSheet.create({
     fontSize: 28,
     fontWeight: "900",
     letterSpacing: 0
+  },
+  gateSubtitle: {
+    color: colors.muted,
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 8,
+    marginBottom: 4
   },
   tabBar: {
     position: "absolute",

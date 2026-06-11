@@ -14,9 +14,26 @@ export type User = {
   created_at: string;
 };
 
+export type TrackRecord = {
+  resolved_calls: number;
+  winning_calls: number;
+  call_win_rate: number | null;
+  prediction_accuracy: number | null;
+  reputation: number;
+  gold: number;
+  credibility: number;
+};
+
+export type PostKind = "call" | "discussion";
+
 export type TradePost = {
   id: string;
+  kind?: PostKind;
+  title?: string | null;
+  body?: string | null;
   user: User;
+  track_record?: TrackRecord | null;
+  rank_score?: number;
   symbol: string;
   direction: Direction;
   entry_price: number;
@@ -38,6 +55,8 @@ export type TradePost = {
   user_prediction?: PredictionOutcome | null;
   score?: number;
   viewer_vote?: "boost" | "fade" | null;
+  comment_count?: number;
+  top_comment?: { username: string; content: string; score: number } | null;
 };
 
 export type TradePostDraft = {
@@ -55,13 +74,16 @@ export type Comment = {
   user: User;
   content: string;
   created_at: string;
+  score?: number;
+  viewer_vote?: "boost" | "fade" | null;
 };
 
 export type FeedMessage = {
-  type: "new_post" | "new_prediction" | "position_open" | "position_close" | string;
+  type: "new_post" | "new_prediction" | "new_vote" | "position_open" | "position_close" | string;
   post_id?: string;
   user_id?: string;
   outcome?: PredictionOutcome;
+  score?: number;
 };
 
 export type ExchangeSession = {

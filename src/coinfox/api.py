@@ -31,7 +31,7 @@ from .community.arena import Arena
 from .community.market_hours import market_now_text, market_session
 from .community.models import ArenaError
 from .community.social import SocialError, SocialStore
-from .data import DataError
+from .data import DataError, fetch_spot
 from .feedback import FeedbackEvent, record_feedback
 from .feedback.models import utc_now_iso
 
@@ -243,6 +243,16 @@ class CreatePostPayload(BaseModel):
     confidence: Optional[float] = None
 
 
+class GoogleAuthPayload(BaseModel):
+    id_token: str = Field(..., min_length=10, max_length=8000)
+
+
+class CreateDiscussionPayload(BaseModel):
+    title: str = Field(..., min_length=1, max_length=160)
+    body: Optional[str] = Field(default=None, max_length=5000)
+    topic: Optional[str] = Field(default=None, max_length=32)  # optional tag e.g. BTC, MACRO, FED
+
+
 class PredictPayload(BaseModel):
     predicted_outcome: str = Field(..., min_length=1, max_length=16)
 
@@ -379,6 +389,37 @@ async def list_posts(
     return [_enrich_post(post) for post in _SOCIAL.list_posts(viewer_id=x_user_id, limit=limit)]
 
 
+@app.get("/api/feed")
+async def ranked_feed(
+    limit: int = Query(50, ge=1, le=200),
+    x_user_id: Optional[str] = Header(default=None),
+) -> list:
+    """Proof-ranked FYP feed. New/anonymous visitors land here: the most
+    credible, fresh, well-argued calls first (not just the newest)."""
+    return [_enrich_post(post) for post in _SOCIAL.list_feed_ranked(viewer_id=x_user_id, limit=limit)]
+
+
+@app.get("/api/price/{symbol}")
+async def live_price(symbol: str) -> dict:
+    """Live spot price for a symbol. Crypto pairs (e.g. BTCUSDT, ETHUSDT) resolve
+    via Binance/Kraken/Coinbase. Equities aren't wired yet — they return
+    ``price: null`` rather than an error, so callers can degrade gracefully."""
+    clean = str(symbol or "").strip().upper()
+    try:
+        price = fetch_spot(clean)
+    except DataError:
+        return {"symbol": clean, "price": None, "source": None}
+    return {"symbol": clean, "price": price, "source": "live"}
+
+
+@app.get("/api/users/{user_id}/track-record")
+async def user_track_record(user_id: str) -> dict:
+    try:
+        return _SOCIAL.author_track_record(user_id)
+    except SocialError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.post("/api/posts")
 async def create_post(
     payload: CreatePostPayload,
@@ -387,6 +428,55 @@ async def create_post(
     user_id = _require_user_header(x_user_id)
     try:
         post = _SOCIAL.create_post(user_id, payload.model_dump())
+    except SocialError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await _FEED.broadcast({"type": "new_post", "post_id": post["id"], "user_id": user_id})
+    return _enrich_post(post)
+
+
+@app.post("/api/auth/google")
+async def auth_google(payload: GoogleAuthPayload) -> dict:
+    """Sign in with Google. The app sends Google's ID token; we verify it with
+    Google, confirm it was issued for OUR app, then find-or-create the account."""
+    import requests
+
+    # Accept any of our configured client IDs (web / android / ios all differ).
+    allowed_auds = {
+        aud.strip()
+        for aud in os.environ.get("GOOGLE_CLIENT_ID", "").split(",")
+        if aud.strip()
+    }
+    try:
+        resp = requests.get(
+            "https://oauth2.googleapis.com/tokeninfo",
+            params={"id_token": payload.id_token},
+            timeout=10,
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail="Could not reach Google") from exc
+    if resp.status_code != 200:
+        raise HTTPException(status_code=401, detail="Invalid Google token")
+    info = resp.json()
+    # Guard against tokens minted for a different app.
+    if allowed_auds and info.get("aud") not in allowed_auds:
+        raise HTTPException(status_code=401, detail="Token was not issued for CoinFox")
+    sub = info.get("sub")
+    if not sub:
+        raise HTTPException(status_code=401, detail="Google token missing subject")
+    user = _SOCIAL.find_or_create_oauth_user(
+        "google", sub, email=info.get("email"), suggested_username=info.get("given_name")
+    )
+    return _enrich_gold(user)
+
+
+@app.post("/api/discussions")
+async def create_discussion(
+    payload: CreateDiscussionPayload,
+    x_user_id: Optional[str] = Header(default=None),
+) -> dict:
+    user_id = _require_user_header(x_user_id)
+    try:
+        post = _SOCIAL.create_discussion(user_id, payload.model_dump())
     except SocialError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await _FEED.broadcast({"type": "new_post", "post_id": post["id"], "user_id": user_id})
@@ -426,13 +516,37 @@ async def vote_post(
         result = _SOCIAL.vote(user_id, post_id, payload.direction)
     except SocialError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    await _FEED.broadcast({"type": "new_vote", "post_id": post_id, "user_id": user_id})
+    # Carry the new score so every viewer's feed can update the count live,
+    # without anyone needing to refetch.
+    await _FEED.broadcast(
+        {"type": "new_vote", "post_id": post_id, "user_id": user_id, "score": result.get("score")}
+    )
     return result
 
 
 @app.get("/api/posts/{post_id}/comments")
-async def list_comments(post_id: str) -> list:
-    return [_enrich_comment(comment) for comment in _SOCIAL.list_comments(post_id)]
+async def list_comments(
+    post_id: str,
+    x_user_id: Optional[str] = Header(default=None),
+) -> list:
+    return [_enrich_comment(comment) for comment in _SOCIAL.list_comments(post_id, viewer_id=x_user_id)]
+
+
+@app.post("/api/comments/{comment_id}/vote")
+async def vote_comment(
+    comment_id: str,
+    payload: VotePayload,
+    x_user_id: Optional[str] = Header(default=None),
+) -> dict:
+    user_id = _require_user_header(x_user_id)
+    try:
+        result = _SOCIAL.vote_comment(user_id, comment_id, payload.direction)
+    except SocialError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await _FEED.broadcast(
+        {"type": "comment_vote", "comment_id": comment_id, "score": result.get("score")}
+    )
+    return result
 
 
 @app.post("/api/posts/{post_id}/comments")

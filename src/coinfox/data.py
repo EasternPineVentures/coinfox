@@ -157,6 +157,36 @@ def fetch_price(symbol: str = "BTCUSDT") -> float:
     raise DataError("All price providers failed")
 
 
+def _spot_coinbase(symbol: str) -> float:
+    """Symbol-aware Coinbase spot (US-accessible, unlike Binance). Maps a pair
+    like BTCUSDT/BTCUSD -> BTC-USD."""
+    base = symbol.upper()
+    for suffix in ("USDT", "USDC", "USD"):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+            break
+    quote = "https://api.coinbase.com/v2/prices/" + f"{base}-USD/spot"
+    data = _get(quote).json()
+    return float(data["data"]["amount"])
+
+
+def fetch_spot(symbol: str) -> float:
+    """Symbol-SAFE live price. Unlike :func:`fetch_price`, this never falls back
+    to a BTC-hardcoded provider, so an unknown symbol (e.g. an equity ticker we
+    can't price) raises ``DataError`` instead of silently returning Bitcoin's
+    price. Tries Binance then Coinbase so it still works from US IPs (Binance is
+    geoblocked there). Equities have no provider here -> ``DataError``."""
+    clean = str(symbol or "").strip().upper()
+    if not clean:
+        raise DataError("symbol is required")
+    for fn in (_price_binance, _spot_coinbase):
+        try:
+            return fn(clean)
+        except (requests.RequestException, KeyError, ValueError, TypeError):
+            continue
+    raise DataError(f"no live price for {clean}")
+
+
 # ---------- 24h stats -----------------------------------------------------
 
 def fetch_24h_stats(symbol: str = "BTCUSDT") -> dict:
